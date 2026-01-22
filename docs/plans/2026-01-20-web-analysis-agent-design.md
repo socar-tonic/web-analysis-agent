@@ -126,8 +126,24 @@ interface SiteAnalysis {
 - Fetch/XHR 네트워크 요청 인터셉트
 - 각 단계별 스크린샷 저장
 
-### 3. AI Engine
-2단계 분석: 규칙 기반 판정 → LLM 심층 분석
+### 3. AI Engine (멀티 에이전트 구조)
+
+**아키텍처: Orchestrator + 3개 전문 에이전트**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      Orchestrator                           │
+│                                                             │
+│   ┌─────────────┐ ┌─────────────┐ ┌─────────────┐          │
+│   │ DOM Agent   │ │ Network     │ │ Policy      │          │
+│   │             │ │ Agent       │ │ Agent       │          │
+│   └──────┬──────┘ └──────┬──────┘ └──────┬──────┘          │
+│          │               │               │                  │
+│          └───────────────┴───────────────┘                  │
+│                          │                                  │
+│                    종합 진단                                 │
+└─────────────────────────────────────────────────────────────┘
+```
 
 **Phase 1: 규칙 기반 즉시 판정 (LLM 불필요)**
 ```typescript
@@ -142,32 +158,120 @@ function checkConnectionFailure(analysis: SiteAnalysis): Diagnosis | null {
   if (analysis.httpStatus && analysis.httpStatus >= 500) {
     return { diagnosis: 'SERVER_OR_FIREWALL', message: `서버 에러 (${analysis.httpStatus})` };
   }
-  return null; // 접속 성공 → Phase 2로
+  return null; // 접속 성공 → Phase 2로 (멀티 에이전트 분석)
 }
 ```
 
-**Phase 2: LLM 심층 분석 (접속 성공 시에만)**
+**Phase 2: 멀티 에이전트 병렬 분석 (접속 성공 시)**
+
 ```typescript
-// 접속은 됐지만 실패한 경우 → LLM이 DOM/네트워크 분석
-async function analyzeWithLLM(analysis: SiteAnalysis, spec: VendorSpec): Promise<Diagnosis> {
-  const prompt = `
-    장비사: ${spec.name}
-    기대 셀렉터: ${JSON.stringify(spec.steps)}
-    실제 DOM: ${JSON.stringify(analysis.domSnapshot)}
-    네트워크 로그: ${JSON.stringify(analysis.networkLogs)}
+interface AgentResult {
+  agent: 'dom' | 'network' | 'policy';
+  hasIssue: boolean;
+  diagnosis?: Diagnosis;
+  details?: string;
+  suggestedFix?: string;
+}
 
-    실패 원인을 분석하고 SIGNATURE_CHANGED / INTERNAL_ERROR / DATA_ERROR / UNKNOWN 중 판정하세요.
-    SIGNATURE_CHANGED인 경우 변경된 셀렉터와 새 셀렉터를 제안하세요.
-  `;
-  // LLM 호출
+// 3개 에이전트 병렬 실행
+async function analyzeWithAgents(
+  analysis: SiteAnalysis,
+  spec: VendorSpec,
+  internalConfig: InternalConfig
+): Promise<AgentResult[]> {
+  const results = await Promise.all([
+    domAgent.analyze(analysis.domSnapshot, spec),
+    networkAgent.analyze(analysis.networkLogs, spec),
+    policyAgent.analyze(internalConfig, spec)
+  ]);
+  return results;
 }
 ```
 
-**LLM 역할 (Phase 2에서만):**
-- DOM diff 분석하여 구체적인 변경 사항 설명
-- 새 셀렉터 추천
-- API 응답 포맷 변경 감지
-- 수정 코드 제안
+**3-1. DOM Agent**
+```typescript
+// 역할: UI 셀렉터 변경 감지
+const domAgent = {
+  async analyze(domSnapshot: DOMSnapshot, spec: VendorSpec): Promise<AgentResult> {
+    // LLM 프롬프트
+    const prompt = `
+      기대 셀렉터: ${JSON.stringify(spec.steps)}
+      실제 DOM: ${JSON.stringify(domSnapshot)}
+
+      다음을 분석하세요:
+      1. 로그인 폼 셀렉터가 변경되었는가?
+      2. 검색 폼 셀렉터가 변경되었는가?
+      3. 버튼/입력필드 위치가 변경되었는가?
+
+      변경된 경우 새 셀렉터를 제안하세요.
+    `;
+    // ...
+  }
+};
+```
+
+**3-2. Network Agent**
+```typescript
+// 역할: API 엔드포인트/포맷 변경 감지
+const networkAgent = {
+  async analyze(networkLogs: NetworkLog[], spec: VendorSpec): Promise<AgentResult> {
+    // LLM 프롬프트
+    const prompt = `
+      기대 API: ${JSON.stringify(spec.api)}
+      실제 네트워크 로그: ${JSON.stringify(networkLogs)}
+
+      다음을 분석하세요:
+      1. API 엔드포인트가 변경되었는가?
+      2. 요청/응답 포맷이 변경되었는가?
+      3. 인증 방식이 변경되었는가?
+
+      변경된 경우 새 API 스펙을 제안하세요.
+    `;
+    // ...
+  }
+};
+```
+
+**3-3. Policy Agent**
+```typescript
+// 역할: 내부 연동 정보 검증
+const policyAgent = {
+  async analyze(config: InternalConfig, spec: VendorSpec): Promise<AgentResult> {
+    // LLM 프롬프트
+    const prompt = `
+      장비사: ${spec.name}
+      DB 설정: ${JSON.stringify(config.discountKeys)}
+      연동 정보: ${JSON.stringify(config.credentials)}
+
+      다음을 검증하세요:
+      1. 할인키가 올바르게 설정되어 있는가?
+      2. 연동 계정 정보가 유효한가?
+      3. 차량번호 포맷이 올바른가?
+
+      문제가 있으면 수정 방안을 제안하세요.
+    `;
+    // ...
+  }
+};
+```
+
+**Phase 3: 결과 종합**
+```typescript
+function aggregateResults(results: AgentResult[]): FinalDiagnosis {
+  const domResult = results.find(r => r.agent === 'dom');
+  const networkResult = results.find(r => r.agent === 'network');
+  const policyResult = results.find(r => r.agent === 'policy');
+
+  // 우선순위: Policy (내부 문제) > DOM/Network (외부 변경)
+  if (policyResult?.hasIssue) {
+    return { diagnosis: 'INTERNAL_ERROR', source: 'policy', ... };
+  }
+  if (domResult?.hasIssue || networkResult?.hasIssue) {
+    return { diagnosis: 'SIGNATURE_CHANGED', source: domResult?.hasIssue ? 'dom' : 'network', ... };
+  }
+  return { diagnosis: 'UNKNOWN', ... };
+}
+```
 
 **출력:**
 ```typescript
@@ -226,6 +330,7 @@ interface PullRequestPayload {
     content: string;               // 수정된 코드
   }[];
   draft: true;                     // Draft PR로 생성
+  validated: boolean;              // 테스트 차량으로 검증 완료 여부
 }
 
 // GitHub MCP를 통한 Draft PR 생성
@@ -236,18 +341,139 @@ async function createDraftPR(analysis: AnalysisResult, spec: VendorSpec): Promis
   // 2. LLM이 제안한 수정 사항 적용
   const updatedCode = applyFix(currentCode, analysis.details.suggestedFix);
 
-  // 3. Draft PR 생성
+  // 3. 테스트 차량으로 검증 (제공된 경우)
+  let validationResult: ValidationResult | null = null;
+  if (analysis.testVehicle) {
+    validationResult = await validateWithTestVehicle(
+      spec,
+      updatedCode,
+      analysis.testVehicle
+    );
+  }
+
+  // 4. Draft PR 생성
   const prUrl = await githubMcp.createPullRequest({
     repo: spec.batchCodeRef.repo,
     branch: `fix/${spec.vendorId}-signature-update`,
     title: `fix(${spec.vendorId}): UI/API 시그니처 변경 대응`,
-    body: generatePRBody(analysis),  // 변경 전/후 비교, 스크린샷 포함
+    body: generatePRBody(analysis, validationResult),
     files: [{ path: spec.batchCodeRef.file, content: updatedCode }],
     draft: true
   });
 
   return prUrl;
 }
+```
+
+### 테스트 차량 검증 (Validation)
+
+운영팀이 테스트 차량번호를 제공하면 실제로 수정된 로직을 실행하여 검증:
+
+```typescript
+interface TestVehicleConfig {
+  vehicleNumber: string;          // 테스트 차량번호
+  allowActualDiscount: boolean;   // 실제 할인 적용 허용 여부
+  skipApplyStep?: boolean;        // 적용 단계 스킵 (검색까지만 테스트)
+}
+
+interface ValidationResult {
+  success: boolean;
+  stepsCompleted: {
+    login: boolean;
+    search: boolean;
+    apply: boolean;
+    verify: boolean;
+  };
+  failedAt?: 'login' | 'search' | 'apply' | 'verify';
+  error?: string;
+  screenshots: {
+    step: string;
+    base64: string;
+  }[];
+  executionTime: number;
+}
+
+async function validateWithTestVehicle(
+  spec: VendorSpec,
+  updatedCode: string,
+  testConfig: TestVehicleConfig
+): Promise<ValidationResult> {
+  // 1. 수정된 코드로 임시 실행 환경 구성
+  const executor = createTempExecutor(updatedCode);
+
+  // 2. Playwright MCP로 전체 플로우 실행
+  const result = await executor.run({
+    vendorId: spec.vendorId,
+    vehicleNumber: testConfig.vehicleNumber,
+    steps: testConfig.skipApplyStep
+      ? ['login', 'search']
+      : ['login', 'search', 'apply', 'verify'],
+    captureScreenshots: true
+  });
+
+  return result;
+}
+```
+
+**검증 결과에 따른 분기:**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    테스트 차량 검증                          │
+│                                                             │
+│   테스트 차량: "12가3456"                                    │
+│                                                             │
+│   실행: 로그인 → 검색 → 할인적용 → 확인                       │
+│                                                             │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│   ✅ 전체 성공                                               │
+│      └─ PR 본문에 "✅ 테스트 차량 검증 완료" 태그            │
+│      └─ 스크린샷 첨부                                        │
+│      └─ 운영팀 리뷰 → 빠른 머지 가능                         │
+│                                                             │
+│   ⚠️ 부분 성공 (예: 검색까지만 성공)                         │
+│      └─ PR 본문에 "⚠️ 부분 검증 (로그인/검색 성공)"          │
+│      └─ 실패 지점 상세 로그                                  │
+│      └─ 추가 수동 확인 필요                                  │
+│                                                             │
+│   ❌ 실패                                                    │
+│      └─ PR 생성 보류                                        │
+│      └─ 재분석 시도 또는                                     │
+│      └─ 슬랙: "자동 수정 실패, 수동 확인 필요"               │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**PR 본문 예시 (검증 완료 시):**
+
+```markdown
+## 변경 사항
+- 로그인 버튼 셀렉터: `#login-btn` → `.new-login-btn`
+
+## 변경 전/후 비교
+| 단계 | Before | After |
+|------|--------|-------|
+| 로그인 | `#login-btn` | `.new-login-btn` |
+
+## ✅ 테스트 차량 검증 완료
+- 차량번호: 12가3456
+- 실행 시간: 4.2초
+- 결과: 전체 플로우 성공
+
+### 스크린샷
+<details>
+<summary>로그인 성공</summary>
+[스크린샷]
+</details>
+<details>
+<summary>검색 성공</summary>
+[스크린샷]
+</details>
+<details>
+<summary>할인 적용 성공</summary>
+[스크린샷]
+</details>
 ```
 
 ---
@@ -296,34 +522,51 @@ async function createDraftPR(analysis: AnalysisResult, spec: VendorSpec): Promis
 
 ---
 
-## Spec 저장소 (향후 구현)
+## Spec 저장소
 
-장비사별 기대 구조를 JSON으로 관리:
+장비사별 기대 구조를 JSON으로 관리 (TypeScript 클래스에서 자동 추출)
+
+### Spec 구조
 
 ```typescript
 interface VendorSpec {
   vendorId: string;
   name: string;
   baseUrl: string;
-  type: 'ui' | 'api' | 'hybrid';
 
-  steps: {
-    login: {
-      selectors?: {
-        form: string;
-        username: string;
-        password: string;
-        submit: string;
-      };
-      api?: {
-        endpoint: string;
-        method: string;
-        bodyFormat: object;
-      };
+  // 현재 구현 방식
+  implementationType: 'dom' | 'api';
+
+  // 구현 버전 (v1/v2 등 레거시 대응)
+  implementationVersion: 'v1' | 'v2' | string;
+
+  // 현재 구현 상세
+  currentImplementation: {
+    dom?: {
+      login: { selectors: Record<string, string> };
+      search: { selectors: Record<string, string> };
+      apply: { selectors: Record<string, string> };
+      verify: { selectors: Record<string, string> };
     };
-    search: { /* ... */ };
-    apply: { /* ... */ };
-    verify: { /* ... */ };
+    api?: {
+      login: { endpoint: string; method: string; bodyFormat: object };
+      search: { endpoint: string; method: string; bodyFormat: object };
+      apply: { endpoint: string; method: string; bodyFormat: object };
+      verify: { endpoint: string; method: string; bodyFormat: object };
+    };
+  };
+
+  // 에이전트가 발견한 대안 (안정성 제안용)
+  discoveredAlternatives?: {
+    api?: {
+      endpoints: string[];
+      discoveredAt: Date;
+      stability: 'unknown' | 'tested' | 'recommended';
+    };
+    dom?: {
+      selectors: Record<string, string>;
+      discoveredAt: Date;
+    };
   };
 
   // 마지막 검증 시점
@@ -333,14 +576,172 @@ interface VendorSpec {
   batchCodeRef: {
     repo: string;
     file: string;
+    version: 'v1' | 'v2';
+  };
+
+  // Spec 생성 출처
+  generatedFrom: {
+    source: 'typescript' | 'legacy' | 'manual';
+    commit?: string;
+    timestamp: Date;
   };
 }
 ```
 
-**Spec 생성 방법 (Phase 2):**
-1. 기존 Puppeteer 코드에서 셀렉터 추출
-2. 실제 사이트 방문하여 검증 및 보강
-3. 정기적으로 spec vs 실제 비교하여 drift 감지
+### 안정성 제안 기능
+
+에이전트가 분석 중 더 안정적인 방식을 발견하면 제안:
+
+```typescript
+interface StabilityRecommendation {
+  vendorId: string;
+  currentMethod: 'dom' | 'api';
+  recommendedMethod: 'dom' | 'api';
+  reason: string;
+  evidence: {
+    // DOM → API 전환 추천 시
+    discoveredApiEndpoints?: string[];
+    apiResponseSample?: object;
+
+    // API → DOM 전환 추천 시 (드묾)
+    apiDeprecationNotice?: string;
+  };
+  migrationDifficulty: 'easy' | 'medium' | 'hard';
+}
+
+// 예시 출력
+const recommendation: StabilityRecommendation = {
+  vendorId: 'vendor-abc',
+  currentMethod: 'dom',
+  recommendedMethod: 'api',
+  reason: 'DOM 셀렉터가 자주 변경됨. 안정적인 API 엔드포인트 발견',
+  evidence: {
+    discoveredApiEndpoints: [
+      'POST /api/v2/auth/login',
+      'POST /api/v2/discount/apply'
+    ],
+    apiResponseSample: { success: true, discountId: '...' }
+  },
+  migrationDifficulty: 'medium'
+};
+```
+
+### 분석 흐름에 안정성 제안 추가
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    DOM/Network Agent                        │
+│                                                             │
+│   1. 현재 구현 방식으로 분석                                  │
+│      └─ DOM 방식: 셀렉터 변경 감지                           │
+│                                                             │
+│   2. (부가) 대안 방식 탐색                                   │
+│      └─ Network 로그에서 API 엔드포인트 발견                  │
+│      └─ /api/v2/discount/apply 발견                         │
+│                                                             │
+│   3. 안정성 비교                                             │
+│      └─ DOM: 최근 3개월 내 2회 변경                          │
+│      └─ API: 발견됨, 테스트 필요                             │
+│                                                             │
+│   4. 제안                                                   │
+│      └─ "API 방식 전환 검토 추천"                            │
+│      └─ discoveredAlternatives에 저장                       │
+└─────────────────────────────────────────────────────────────┘
+```
+```
+
+### 하이브리드 Spec 조회 전략
+
+```typescript
+async function getVendorExpectation(vendorId: string): Promise<VendorExpectation> {
+  // 1. Fast Path: Spec JSON 조회
+  const spec = await specStore.get(vendorId);
+
+  if (spec && !isStale(spec)) {
+    return { source: 'spec', data: spec };
+  }
+
+  // 2. Fallback: TypeScript 코드 직접 읽기
+  const code = await githubMcp.getFileContent(
+    spec?.batchCodeRef.repo ?? DEFAULT_REPO,
+    `vendors/${vendorId}.ts`
+  );
+
+  return { source: 'code', data: await parseTypeScriptClass(code) };
+}
+
+function isStale(spec: VendorSpec): boolean {
+  // spec 생성 후 코드가 변경되었으면 stale
+  // 또는 일정 기간 지났으면 stale
+}
+```
+
+### Spec 자동 생성/동기화
+
+**1. 초기 생성 (1회성)**
+```
+기존 50개 TypeScript 클래스
+        │
+        ▼ LLM 기반 파싱
+┌─────────────────────────────────────┐
+│  class VendorAbc extends BaseVendor │
+│    login(): #login-btn              │
+│    search(): .search-input          │
+│    apply(): button.apply            │
+└─────────────────────────────────────┘
+        │
+        ▼ 추출
+┌─────────────────────────────────────┐
+│  vendor-abc.json                    │
+│  {                                  │
+│    "login": { "submit": "#login" }, │
+│    "search": { ... }                │
+│  }                                  │
+└─────────────────────────────────────┘
+```
+
+**2. 자동 동기화 (CI/CD)**
+```yaml
+# .github/workflows/sync-spec.yml
+on:
+  push:
+    paths:
+      - 'src/vendors/**/*.ts'
+
+jobs:
+  sync-spec:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract spec from changed vendor files
+        run: npm run extract-spec -- --changed-only
+
+      - name: Commit updated specs
+        run: |
+          git add specs/
+          git commit -m "chore: sync vendor specs"
+          git push
+```
+
+### 분석 시 활용
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                     DOM Agent                           │
+│                                                         │
+│   1. Spec 조회 (Fast Path)                              │
+│      └─ vendor-abc.json: login.submit = "#login-btn"   │
+│                                                         │
+│   2. 실제 DOM 캡처 (Playwright MCP)                     │
+│      └─ #login-btn 없음, .new-login-btn 발견            │
+│                                                         │
+│   3. 변경 감지                                          │
+│      └─ "#login-btn" → ".new-login-btn" 변경됨          │
+│                                                         │
+│   4. (필요시) 코드 직접 확인 (Deep Path)                 │
+│      └─ GitHub MCP → vendor-abc.ts 읽기                │
+│      └─ 정확한 수정 위치 파악                            │
+└─────────────────────────────────────────────────────────┘
+```
 
 ---
 

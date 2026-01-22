@@ -35,10 +35,50 @@
 
 ### 주요 컴포넌트
 ```
-Alert Receiver → Analyzer (Playwright) → AI Engine → Action Dispatcher
-                                                           ↓
-                                              Slack 알림 / GitHub PR
+Alert Receiver → Analyzer (Playwright) → AI Engine (멀티 에이전트) → Action Dispatcher
+                                              │                            ↓
+                                    ┌─────────┼─────────┐       Slack 알림 / GitHub PR
+                                    │         │         │
+                                DOM Agent  Network   Policy
+                                           Agent    Agent
 ```
+
+### 멀티 에이전트 구조
+| 에이전트 | 역할 | 분석 대상 |
+|---------|------|----------|
+| **DOM Agent** | UI 셀렉터 변경 감지 | 폼 구조, 버튼, 입력필드 |
+| **Network Agent** | API 변경 감지 | 엔드포인트, 요청/응답 포맷 |
+| **Policy Agent** | 내부 설정 검증 | DB 할인키, 연동 정보, 차량번호 |
+
+### 구현 방식
+- 장비사별로 `dom` OR `api` 방식 (현재 혼합 없음)
+- 코드 버전: v1/v2 혼재 (TypeScript만 있는게 아님)
+- → Spec으로 추상화하여 관리
+
+### 안정성 제안 기능
+에이전트가 분석 중 더 안정적인 방식 발견 시 제안:
+```
+"현재 DOM 방식인데 API 엔드포인트(/api/v2/discount) 발견.
+ DOM이 최근 자주 변경됨 → API 전환 검토 추천"
+```
+
+### 테스트 차량 검증
+운영팀이 테스트 차량번호 제공 시:
+1. 수정된 코드로 실제 플로우 실행 (Playwright MCP)
+2. 로그인 → 검색 → 할인적용 → 확인
+3. 결과에 따라:
+   - ✅ 성공 → PR에 "검증 완료" 태그 + 스크린샷 첨부
+   - ❌ 실패 → 재분석 또는 수동 확인 요청
+
+**실행 방식**: 조건부 실행 (실패 유형에 따라 필요한 에이전트만 호출)
+
+### Spec 하이브리드 전략
+| 상황 | 방식 | 설명 |
+|-----|------|------|
+| 평소 | **Fast Path** | Spec JSON 참조 (빠름, 토큰 절약) |
+| Spec 없음/오래됨 | **Deep Path** | GitHub MCP로 TypeScript 코드 직접 읽기 |
+
+**Spec 동기화**: 배치 레포 PR 머지 시 CI/CD가 자동으로 Spec 추출/갱신
 
 ### 분석 흐름
 1. 슬랙에서 실패 알림 수신
