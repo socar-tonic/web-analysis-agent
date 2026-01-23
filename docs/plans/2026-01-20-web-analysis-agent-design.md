@@ -55,10 +55,103 @@
 
 ### 기술 스택
 - **Runtime**: Node.js + TypeScript
-- **Browser Automation**: Playwright (headless)
-- **LLM**: TBD (OpenAI, Claude, 또는 로컬 모델)
-- **GitHub 연동**: GitHub MCP (Draft PR 생성)
+- **Package Manager**: pnpm
+- **Agent Framework**: LangGraph.js
+- **Structured Output**: Zod (에이전트 간 통신 스키마)
+- **Memory**: LangGraph Checkpoints (에이전트 상태/기억 저장)
+- **LLM**: TBD (OpenAI, Claude 등 - LangGraph가 추상화)
+- **MCP Servers**:
+  - Playwright MCP (브라우저 자동화)
+  - GitHub MCP (코드 조회, Draft PR 생성)
+  - DB MCP (내부 설정 조회)
 - **Storage**: TBD (파일 시스템, DB, 또는 S3)
+
+---
+
+## LangGraph 구조
+
+```typescript
+import { StateGraph, END } from '@langchain/langgraph';
+import { ChatAnthropic } from '@langchain/anthropic';
+
+// 그래프 정의
+const workflow = new StateGraph<AgentState>({
+  channels: agentStateChannels,
+})
+  // 노드 (에이전트들)
+  .addNode('orchestrator', orchestratorNode)
+  .addNode('dom_agent', domAgentNode)
+  .addNode('network_agent', networkAgentNode)
+  .addNode('policy_agent', policyAgentNode)
+  .addNode('validator', validatorNode)
+  .addNode('action_dispatcher', actionDispatcherNode)
+
+  // 엣지 (흐름)
+  .addEdge('__start__', 'orchestrator')
+  .addConditionalEdges('orchestrator', routeToAgents, {
+    'dom': 'dom_agent',
+    'network': 'network_agent',
+    'policy': 'policy_agent',
+    'aggregate': 'action_dispatcher',
+    'server_down': 'action_dispatcher',
+  })
+  .addEdge('dom_agent', 'orchestrator')
+  .addEdge('network_agent', 'orchestrator')
+  .addEdge('policy_agent', 'orchestrator')
+  .addConditionalEdges('action_dispatcher', shouldValidate, {
+    'validate': 'validator',
+    'done': END,
+  })
+  .addConditionalEdges('validator', handleValidationResult, {
+    'success': END,
+    'retry': 'orchestrator',
+  });
+
+const app = workflow.compile({
+  checkpointer: new MemorySaver(),  // 메모리 저장
+});
+```
+
+**그래프 시각화:**
+
+```
+                    ┌─────────────────┐
+                    │     START       │
+                    └────────┬────────┘
+                             │
+                             ▼
+                    ┌─────────────────┐
+             ┌──────│  Orchestrator   │──────┐
+             │      └────────┬────────┘      │
+             │               │               │
+    ┌────────▼───┐  ┌───────▼───────┐  ┌────▼────────┐
+    │ DOM Agent  │  │ Network Agent │  │ Policy Agent│
+    └────────┬───┘  └───────┬───────┘  └────┬────────┘
+             │               │               │
+             └───────────────┼───────────────┘
+                             │
+                             ▼
+                    ┌─────────────────┐
+                    │  Orchestrator   │ (결과 종합)
+                    └────────┬────────┘
+                             │
+                             ▼
+                    ┌─────────────────┐
+                    │Action Dispatcher│
+                    └────────┬────────┘
+                             │
+              ┌──────────────┼──────────────┐
+              │              │              │
+              ▼              ▼              ▼
+        ┌──────────┐  ┌──────────┐   ┌──────────┐
+        │ Validator│  │ Slack    │   │   END    │
+        └────┬─────┘  └──────────┘   └──────────┘
+             │
+             ▼
+      ┌──────────────┐
+      │ Success/Retry│
+      └──────────────┘
+```
 
 ---
 
@@ -292,6 +385,393 @@ interface AnalysisResult {
   };
   canAutoFix: boolean; // PR 자동 생성 가능 여부 (SIGNATURE_CHANGED인 경우만 true)
 }
+```
+
+### 에이전트 간 통신 (Zod Structured Output)
+
+에이전트들이 서로 소통할 때 Zod 스키마로 구조화된 데이터 사용:
+
+```typescript
+import { z } from 'zod';
+
+// Orchestrator → Agent 요청
+const AnalysisRequestSchema = z.object({
+  vendorId: z.string(),
+  failedStep: z.enum(['login', 'search', 'apply', 'verify']).optional(),
+  errorMessage: z.string().optional(),
+  testVehicle: z.string().optional(),
+});
+
+// DOM Agent 결과
+const DOMAnalysisResultSchema = z.object({
+  agent: z.literal('dom'),
+  hasIssue: z.boolean(),
+  diagnosis: z.enum(['SIGNATURE_CHANGED', 'NO_ISSUE', 'UNKNOWN']),
+  changes: z.array(z.object({
+    element: z.string(),           // "로그인 버튼"
+    expectedSelector: z.string(),  // "#login-btn"
+    actualSelector: z.string().nullable(),  // ".new-login-btn" or null
+    confidence: z.number(),        // 0.95
+  })).optional(),
+  suggestedFix: z.string().optional(),  // 수정 코드 제안
+});
+
+// Network Agent 결과
+const NetworkAnalysisResultSchema = z.object({
+  agent: z.literal('network'),
+  hasIssue: z.boolean(),
+  diagnosis: z.enum(['SIGNATURE_CHANGED', 'NO_ISSUE', 'UNKNOWN']),
+  changes: z.array(z.object({
+    endpoint: z.string(),
+    expectedFormat: z.object({}).passthrough(),
+    actualFormat: z.object({}).passthrough(),
+  })).optional(),
+  suggestedFix: z.string().optional(),
+});
+
+// Policy Agent 결과
+const PolicyAnalysisResultSchema = z.object({
+  agent: z.literal('policy'),
+  hasIssue: z.boolean(),
+  diagnosis: z.enum(['INTERNAL_ERROR', 'DATA_ERROR', 'NO_ISSUE']),
+  issues: z.array(z.object({
+    type: z.enum(['discount_key', 'credentials', 'vehicle_format']),
+    description: z.string(),
+    suggestedFix: z.string().optional(),
+  })).optional(),
+});
+
+// 종합 결과 (Orchestrator가 생성)
+const FinalDiagnosisSchema = z.object({
+  vendorId: z.string(),
+  overallDiagnosis: z.enum([
+    'SERVER_OR_FIREWALL',
+    'SIGNATURE_CHANGED',
+    'INTERNAL_ERROR',
+    'DATA_ERROR',
+    'UNKNOWN'
+  ]),
+  confidence: z.number(),
+  summary: z.string(),
+  agentResults: z.object({
+    dom: DOMAnalysisResultSchema.optional(),
+    network: NetworkAnalysisResultSchema.optional(),
+    policy: PolicyAnalysisResultSchema.optional(),
+  }),
+  canAutoFix: z.boolean(),
+  suggestedFix: z.string().optional(),
+  validationResult: z.object({
+    tested: z.boolean(),
+    success: z.boolean().optional(),
+    screenshots: z.array(z.string()).optional(),
+  }).optional(),
+});
+```
+
+### 보안 아키텍처: Credential Vault + Session Management
+
+**원칙: LLM은 비밀번호, 세션 토큰, 쿠키를 절대 알지 못함**
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                                                                         │
+│   🧠 LLM                                                                │
+│                                                                         │
+│   - vendorId만 알고 있음                                                 │
+│   - sessionId로 세션 참조                                                │
+│   - 실제 credentials, 쿠키, 토큰은 모름                                  │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│   ⚙️ Agent Runtime                                                      │
+│                                                                         │
+│   ┌───────────────────┐    ┌───────────────────┐                        │
+│   │ 🔐 Credential     │    │ 📦 Session        │                        │
+│   │    Vault          │    │    Manager        │                        │
+│   │                   │    │                   │                        │
+│   │ vendor-abc:       │    │ sessionId: abc-123│                        │
+│   │   username: xxx   │    │   browserContext  │                        │
+│   │   password: xxx   │    │   cookies: [...]  │                        │
+│   └───────────────────┘    │   loggedIn: true  │                        │
+│                            └───────────────────┘                        │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│   🌐 Playwright MCP - 실제 로그인/작업 수행                              │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Credential Vault:**
+
+```typescript
+// 보안 저장소 (AWS Secrets Manager, HashiCorp Vault, 암호화된 DB 등)
+interface CredentialVault {
+  getCredentials(vendorId: string): Promise<{
+    username: string;
+    password: string;
+    loginUrl: string;
+    additionalFields?: Record<string, string>;
+  }>;
+}
+
+class SecureCredentialVault implements CredentialVault {
+  async getCredentials(vendorId: string) {
+    // AWS Secrets Manager 예시
+    const secret = await secretsManager.getSecretValue({
+      SecretId: `parking-batch/vendor/${vendorId}`
+    });
+    return JSON.parse(secret.SecretString);
+  }
+}
+```
+
+**Session Manager:**
+
+```typescript
+interface BrowserSession {
+  sessionId: string;
+  vendorId: string;
+  browser: Browser;
+  context: BrowserContext;
+  page: Page;
+  loggedIn: boolean;
+  createdAt: Date;
+  expiresAt: Date;
+}
+
+class SessionManager {
+  private sessions: Map<string, BrowserSession> = new Map();
+
+  async createSession(vendorId: string): Promise<string> {
+    const browser = await playwright.chromium.launch({ headless: true });
+    const context = await browser.newContext();
+    const page = await context.newPage();
+
+    const sessionId = crypto.randomUUID();
+
+    this.sessions.set(sessionId, {
+      sessionId,
+      vendorId,
+      browser,
+      context,
+      page,
+      loggedIn: false,
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + 30 * 60 * 1000), // 30분
+    });
+
+    return sessionId;
+  }
+
+  getSession(sessionId: string): BrowserSession | undefined {
+    const session = this.sessions.get(sessionId);
+    if (session && session.expiresAt < new Date()) {
+      this.closeSession(sessionId);
+      return undefined;
+    }
+    return session;
+  }
+
+  async closeSession(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      await session.browser.close();
+      this.sessions.delete(sessionId);
+    }
+  }
+}
+```
+
+**MCP Tools (보안 적용):**
+
+```typescript
+// 🔧 Login Tool - LLM은 vendorId만 전달
+const vendorLoginTool = {
+  name: 'vendor_login',
+  description: 'Log into a vendor site. Returns sessionId for subsequent operations.',
+  parameters: z.object({
+    vendorId: z.string().describe('Vendor identifier'),
+  }),
+
+  async execute({ vendorId }: { vendorId: string }) {
+    // 1. 세션 생성
+    const sessionId = await sessionManager.createSession(vendorId);
+    const session = sessionManager.getSession(sessionId)!;
+
+    // 2. Vault에서 credentials 조회 (LLM 모름)
+    const credentials = await vault.getCredentials(vendorId);
+    const spec = await specStore.get(vendorId);
+
+    // 3. 실제 로그인 수행
+    await session.page.goto(credentials.loginUrl);
+    await session.page.fill(spec.login.selectors.username, credentials.username);
+    await session.page.fill(spec.login.selectors.password, credentials.password);
+    await session.page.click(spec.login.selectors.submit);
+
+    // 4. 로그인 확인
+    await session.page.waitForSelector(spec.login.selectors.successIndicator);
+    session.loggedIn = true;
+
+    // 5. sessionId만 반환 (credentials 노출 안 함)
+    return { success: true, sessionId, vendorId };
+  }
+};
+
+// 🔧 Search Tool - sessionId로 기존 세션 사용
+const vehicleSearchTool = {
+  name: 'vehicle_search',
+  description: 'Search for a vehicle in the vendor system.',
+  parameters: z.object({
+    sessionId: z.string().describe('Session ID from login'),
+    vehicleNumber: z.string().describe('Vehicle number to search'),
+  }),
+
+  async execute({ sessionId, vehicleNumber }) {
+    const session = sessionManager.getSession(sessionId);
+    if (!session?.loggedIn) {
+      return { success: false, error: 'Session not found or not logged in' };
+    }
+
+    const spec = await specStore.get(session.vendorId);
+
+    // 같은 브라우저 컨텍스트 사용 (세션 유지됨)
+    await session.page.fill(spec.search.selectors.input, vehicleNumber);
+    await session.page.click(spec.search.selectors.button);
+    await session.page.waitForSelector(spec.search.selectors.result);
+
+    const resultText = await session.page.locator(spec.search.selectors.result).textContent();
+
+    return {
+      success: true,
+      sessionId,
+      vehicleNumber,
+      found: !resultText?.includes('검색 결과 없음'),
+    };
+  }
+};
+
+// 🔧 Apply Discount Tool
+const applyDiscountTool = {
+  name: 'apply_discount',
+  description: 'Apply parking discount to the searched vehicle.',
+  parameters: z.object({
+    sessionId: z.string(),
+  }),
+
+  async execute({ sessionId }) {
+    const session = sessionManager.getSession(sessionId);
+    if (!session?.loggedIn) {
+      return { success: false, error: 'Session not found or not logged in' };
+    }
+
+    const spec = await specStore.get(session.vendorId);
+
+    await session.page.click(spec.apply.selectors.button);
+    await session.page.waitForSelector(spec.apply.selectors.successIndicator);
+
+    return { success: true, sessionId, applied: true };
+  }
+};
+
+// 🔧 Close Session Tool
+const closeSessionTool = {
+  name: 'close_session',
+  description: 'Close the browser session and cleanup.',
+  parameters: z.object({
+    sessionId: z.string(),
+  }),
+
+  async execute({ sessionId }) {
+    await sessionManager.closeSession(sessionId);
+    return { success: true, sessionId, closed: true };
+  }
+};
+```
+
+**LLM 관점에서의 플로우:**
+
+```typescript
+// LLM이 보는 대화 흐름
+const conversation = [
+  // 1. 로그인 요청 (vendorId만)
+  { role: 'assistant', tool_use: { name: 'vendor_login', input: { vendorId: 'vendor-abc' }}},
+  { role: 'user', tool_result: { success: true, sessionId: 'abc-123' }},
+
+  // 2. 검색 요청 (sessionId 참조)
+  { role: 'assistant', tool_use: { name: 'vehicle_search', input: { sessionId: 'abc-123', vehicleNumber: '12가3456' }}},
+  { role: 'user', tool_result: { success: true, found: true }},
+
+  // 3. 할인 적용 (같은 sessionId)
+  { role: 'assistant', tool_use: { name: 'apply_discount', input: { sessionId: 'abc-123' }}},
+  { role: 'user', tool_result: { success: true, applied: true }},
+
+  // 4. 세션 종료
+  { role: 'assistant', tool_use: { name: 'close_session', input: { sessionId: 'abc-123' }}},
+  { role: 'user', tool_result: { success: true, closed: true }},
+];
+
+// ✅ LLM이 아는 것: vendorId, sessionId, vehicleNumber, 결과
+// ❌ LLM이 모르는 것: password, cookies, session token, auth header
+```
+
+**보안 체크리스트:**
+
+| 항목 | LLM 노출 | 저장 위치 |
+|------|---------|----------|
+| vendorId | ✅ 노출 | LLM State |
+| sessionId | ✅ 노출 | LLM State |
+| vehicleNumber | ✅ 노출 | LLM State |
+| username | ❌ 차단 | Credential Vault |
+| password | ❌ 차단 | Credential Vault |
+| cookies | ❌ 차단 | Session Manager |
+| auth token | ❌ 차단 | Session Manager |
+
+### 메모리 (LangGraph Checkpoints)
+
+에이전트가 기억해야 할 것들:
+
+```typescript
+// LangGraph State (메모리)
+interface AgentState {
+  // 현재 분석 세션
+  sessionId: string;
+  vendorId: string;
+
+  // 대화 히스토리
+  messages: BaseMessage[];
+
+  // 각 에이전트 결과 (누적)
+  domResult?: z.infer<typeof DOMAnalysisResultSchema>;
+  networkResult?: z.infer<typeof NetworkAnalysisResultSchema>;
+  policyResult?: z.infer<typeof PolicyAnalysisResultSchema>;
+
+  // 캡처된 데이터
+  siteSnapshot?: {
+    dom: string;
+    networkLogs: NetworkLog[];
+    screenshots: string[];
+  };
+
+  // 최종 진단
+  finalDiagnosis?: z.infer<typeof FinalDiagnosisSchema>;
+
+  // 검증 결과
+  validationResult?: ValidationResult;
+}
+```
+
+**메모리 활용 예시:**
+
+```
+1️⃣ DOM Agent 실행 → domResult 저장
+2️⃣ Network Agent 실행 → networkResult 저장
+3️⃣ Orchestrator: domResult + networkResult 참조하여 종합 판단
+4️⃣ 테스트 검증 실패 → 재분석 시 이전 결과 참조
+5️⃣ 세션 종료 후에도 Checkpoint로 복원 가능
 ```
 
 ### 4. Action Dispatcher

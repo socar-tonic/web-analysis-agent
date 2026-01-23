@@ -48,7 +48,7 @@ flowchart TB
     style TEST fill:#e8f5e9,stroke:#4caf50,stroke-width:2px
 ```
 
-## 🤖 멀티 에이전트 구조
+## 🤖 멀티 에이전트 구조 (LangGraph)
 
 ```mermaid
 flowchart TB
@@ -58,17 +58,116 @@ flowchart TB
     ORCH --> NET[🌐 Network Agent]
     ORCH --> POL[📋 Policy Agent]
 
-    DOM --> |셀렉터 변경?| AGG[종합 진단]
-    NET --> |API 변경?| AGG
-    POL --> |연동정보 오류?| AGG
+    DOM --> |Zod Schema| AGG[종합 진단]
+    NET --> |Zod Schema| AGG
+    POL --> |Zod Schema| AGG
 
     AGG --> RESULT[최종 진단 + 해결책]
     RESULT --> ACTION[Draft PR / 슬랙 알림]
+
+    MEM[(Memory<br/>Checkpoints)] -.-> ORCH
+    MEM -.-> DOM
+    MEM -.-> NET
+    MEM -.-> POL
 
     style DOM fill:#e3f2fd,stroke:#2196f3
     style NET fill:#fff3cd,stroke:#ffc107
     style POL fill:#f3e5f5,stroke:#9c27b0
     style AGG fill:#c8e6c9,stroke:#4caf50
+    style MEM fill:#fff,stroke:#999,stroke-dasharray: 5 5
+```
+
+## 📦 기술 스택
+
+```mermaid
+flowchart LR
+    subgraph FRAMEWORK["LangGraph.js"]
+        ORCH[Orchestrator]
+        AGENTS[Agents]
+        MEM[Memory/Checkpoints]
+    end
+
+    subgraph SCHEMA["Zod"]
+        ZOD[Structured Output<br/>에이전트 간 통신]
+    end
+
+    subgraph MCP["MCP Servers"]
+        PW[Playwright]
+        GH[GitHub]
+        DB[DB]
+    end
+
+    FRAMEWORK --> SCHEMA
+    FRAMEWORK --> MCP
+
+    style FRAMEWORK fill:#e8f5e9,stroke:#4caf50
+    style SCHEMA fill:#fff3cd,stroke:#ffc107
+    style MCP fill:#e3f2fd,stroke:#2196f3
+```
+
+## 🔐 보안 아키텍처
+
+```mermaid
+flowchart TB
+    subgraph LLM_ZONE["🧠 LLM이 아는 것"]
+        VID[vendorId]
+        SID[sessionId]
+        VNUM[vehicleNumber]
+        RESULT[성공/실패 결과]
+    end
+
+    subgraph SECURE_ZONE["🔐 LLM이 모르는 것"]
+        VAULT[Credential Vault<br/>username, password]
+        SESSION[Session Manager<br/>cookies, tokens]
+    end
+
+    subgraph BROWSER["🌐 Playwright"]
+        PAGE[실제 브라우저]
+    end
+
+    LLM_ZONE -->|"vendorId만"| TOOL[MCP Tool]
+    TOOL --> VAULT
+    TOOL --> SESSION
+    SESSION --> PAGE
+    PAGE -->|"결과만"| TOOL
+    TOOL -->|"sessionId만"| LLM_ZONE
+
+    style SECURE_ZONE fill:#ffcdd2,stroke:#f44336
+    style LLM_ZONE fill:#e3f2fd,stroke:#2196f3
+```
+
+## 🔄 세션 플로우
+
+```mermaid
+sequenceDiagram
+    participant LLM as 🧠 LLM
+    participant Tool as 🔧 MCP Tool
+    participant Vault as 🔐 Vault
+    participant Session as 📦 Session
+    participant Browser as 🌐 Browser
+
+    Note over LLM: vendorId만 알고 있음
+
+    LLM->>Tool: login(vendorId)
+    Tool->>Vault: getCredentials(vendorId)
+    Vault-->>Tool: { username, password }
+    Tool->>Session: createSession()
+    Session->>Browser: 브라우저 생성
+    Tool->>Browser: 실제 로그인 (비밀번호 사용)
+    Browser-->>Session: 쿠키 저장됨
+    Session-->>Tool: sessionId
+    Tool-->>LLM: { sessionId } ✅
+
+    Note over LLM: sessionId로 후속 작업
+
+    LLM->>Tool: search(sessionId, 차량번호)
+    Tool->>Session: getSession(sessionId)
+    Session-->>Tool: browserContext (로그인 상태)
+    Tool->>Browser: 검색 수행
+    Browser-->>Tool: 결과
+    Tool-->>LLM: { found: true } ✅
+
+    Note over LLM: 비밀번호, 쿠키 절대 노출 안 됨
 ```
 
 ## 🚗 테스트 차량 검증

@@ -27,8 +27,12 @@
 
 ### 확정된 것
 - **별도 서버**: 기존 배치와 분리된 독립 서비스
-- **기술 스택**: Node.js + TypeScript + Playwright
-- **GitHub 연동**: GitHub MCP로 Draft PR 생성
+- **기술 스택**:
+  - Node.js + TypeScript + pnpm
+  - **LangGraph.js** (에이전트 오케스트레이션)
+  - **Zod** (에이전트 간 구조화된 통신)
+  - **LangGraph Checkpoints** (메모리/상태 저장)
+- **MCP 연동**: Playwright, GitHub, DB
 - **트리거**: 슬랙 알림 수신 시 분석 시작
 - **분석 방식**: 사후 분석 (실패 알림 → 사이트 재방문 → 분석)
 - **최종 목표**: UI/API 변경 시 기존 코드와 비교 → 변경점 제안 → Draft PR 생성
@@ -69,6 +73,21 @@ Alert Receiver → Analyzer (Playwright) → AI Engine (멀티 에이전트) →
 3. 결과에 따라:
    - ✅ 성공 → PR에 "검증 완료" 태그 + 스크린샷 첨부
    - ❌ 실패 → 재분석 또는 수동 확인 요청
+
+### 보안 아키텍처
+**원칙: LLM은 비밀번호, 세션 토큰, 쿠키를 절대 알지 못함**
+
+| LLM이 아는 것 | LLM이 모르는 것 |
+|--------------|----------------|
+| vendorId | username/password |
+| sessionId | cookies |
+| vehicleNumber | auth tokens |
+| 성공/실패 결과 | session data |
+
+**구성요소:**
+- **Credential Vault**: 비밀번호 보안 저장 (AWS Secrets Manager 등)
+- **Session Manager**: 브라우저 세션 관리 (로그인 상태 유지)
+- **MCP Tools**: vendorId/sessionId만 받고, 실제 credentials는 내부에서 처리
 
 **실행 방식**: 조건부 실행 (실패 유형에 따라 필요한 에이전트만 호출)
 
