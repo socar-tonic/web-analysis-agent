@@ -1,0 +1,9 @@
+{
+  "$schema": "https://langchain-ai.github.io/langgraph/schemas/langgraph.json",
+  "node_version": "20",
+  "dockerfile_lines": [],
+  "graphs": {
+    "agent": "./src/graph/workflow.ts:createWorkflow"
+  },
+  "env": ".env"
+}
