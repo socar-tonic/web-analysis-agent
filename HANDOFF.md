@@ -30,6 +30,7 @@
 - **기술 스택**:
   - Node.js + TypeScript + pnpm
   - **LangGraph.js** (에이전트 오케스트레이션)
+  - **LangSmith** (트레이싱, 디버깅, 데모용 Observability)
   - **Zod** (에이전트 간 구조화된 통신)
   - **LangGraph Checkpoints** (메모리/상태 저장)
 - **MCP 연동**: Playwright, GitHub, DB
@@ -122,11 +123,18 @@ Alert Receiver → Analyzer (Playwright) → AI Engine (멀티 에이전트) →
 
 ---
 
+## 결정된 사항
+
+| 항목 | 결정 | 비고 |
+|------|------|------|
+| LLM | **Claude** (@langchain/anthropic) | 교체 용이하도록 추상화 |
+| Agent 실행 방식 | **Parallel** | DOM/Network/Policy 병렬 실행 |
+| Observability | **LangSmith** | 데모/디버깅용 트레이싱 |
+
 ## 미결정 사항
 
 | 항목 | 옵션 | 비고 |
 |------|------|------|
-| LLM | OpenAI / Claude / 로컬 | 비용, 성능 고려 필요 |
 | 저장소 | 파일 / DB / S3 | 스크린샷, 분석 결과 저장 |
 | 배포 환경 | 기존 인프라 / 별도 | 인프라팀 확인 필요 |
 | 알림 수신 | 슬랙 웹훅 / 로그 스트림 | 기존 시스템에 따라 |
@@ -147,9 +155,32 @@ web-analysis-agent/
 │   ├── ai-engine/          # 휴리스틱 + LLM 분석
 │   ├── action-dispatcher/  # 슬랙/GitHub 액션
 │   └── specs/              # 장비사별 spec JSON
+├── .env.example            # 환경 변수 템플릿
+├── langgraph.json          # LangGraph Studio 설정
 ├── HANDOFF.md              # 이 파일
 └── package.json
 ```
+
+## LangSmith 설정 (데모/디버깅용)
+
+### 환경 변수
+```bash
+# .env
+LANGSMITH_API_KEY=<your-api-key>      # https://smith.langchain.com 에서 발급
+LANGSMITH_PROJECT=web-analysis-agent
+LANGSMITH_TRACING=true
+```
+
+### LangGraph Studio (선택)
+로컬에서 에이전트 플로우를 시각적으로 실행/디버깅:
+1. LangGraph Studio 설치: https://github.com/langchain-ai/langgraph-studio
+2. Docker 필요
+3. `langgraph.json` 설정 파일 필요
+
+### 활용
+- **데모**: LangSmith 대시보드에서 실시간 에이전트 실행 추적
+- **디버깅**: 각 노드별 입출력, 토큰 사용량, 지연 시간 확인
+- **평가**: 에이전트 성능 측정 및 비교
 
 ---
 

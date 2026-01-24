@@ -13,6 +13,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Runtime: Node.js + TypeScript
 - Package Manager: pnpm
 - Agent Framework: LangGraph.js
+- Observability: LangSmith (트레이싱, 디버깅, 데모)
 - Structured Output: Zod
 - Memory: LangGraph Checkpoints
 - Browser Automation: Playwright MCP
@@ -61,6 +62,21 @@ LangGraph.js 코드 작성 시 반드시 `use context7`를 사용하여 최신 �
 LangGraph StateGraph 구현해줘 use context7
 ```
 
+### LangSmith 설정
+
+데모 및 디버깅을 위해 LangSmith 트레이싱 활성화:
+
+```bash
+# .env 필수 환경 변수
+LANGSMITH_API_KEY=<your-api-key>
+LANGSMITH_PROJECT=web-analysis-agent
+LANGSMITH_TRACING=true
+```
+
+- LangSmith 대시보드: https://smith.langchain.com
+- LangGraph Studio (선택): 로컬에서 에이전트 플로우 시각화 가능
+- `langgraph.json` 설정 시 Studio UI로 그래프 실행/디버깅 가능
+
 ### Zod Schemas
 
 에이전트 간 통신은 반드시 Zod 스키마로 구조화:
@@ -82,6 +98,14 @@ LangGraph StateGraph 구현해줘 use context7
 - `HANDOFF.md`: 프로젝트 개요 및 아키텍처 결정 사항
 - `docs/architecture-overview.md`: 아키텍처 다이어그램
 - `docs/plans/2026-01-20-web-analysis-agent-design.md`: 상세 설계서 (Zod 스키마, 코드 예시 포함)
+
+## Architecture Decisions
+
+| 항목 | 결정 |
+|------|------|
+| Agent 실행 | Parallel (DOM/Network/Policy 병렬 → Orchestrator 종합) |
+| LLM Provider | Claude (@langchain/anthropic), 추상화로 교체 용이 |
+| Observability | LangSmith 트레이싱 |
 
 ## MVP Phases
 
