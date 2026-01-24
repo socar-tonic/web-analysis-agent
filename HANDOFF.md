@@ -206,97 +206,115 @@ LANGSMITH_TRACING=true
 
 ## 현재 구현 상태 (2026-01-24)
 
-### Phase 1 MVP 완료 ✅
+### Phase 1 MVP 완료 ✅ + CLI with LLM 🚧
 
-모든 Task 완료됨 (28개 테스트 통과)
+**방향 전환**: HTTP 서버보다 에이전트 품질 검증 우선
+- CLI로 개별 에이전트 테스트 가능하도록 구성
+- mock-input.json으로 수동 입력 제공
+- LLM 연동 완료 (Claude Sonnet)
 
-| # | Task | 상태 |
-|---|------|------|
-| 1 | Project Setup | ✅ |
-| 2 | Zod Schemas | ✅ |
-| 3 | Analyzer (Playwright) | ✅ |
-| 4 | Heuristic Engine | ✅ |
-| 5 | Slack Dispatcher (Mock 지원) | ✅ |
-| 6 | LangGraph Workflow (멀티에이전트 병렬) | ✅ |
-| 7 | Alert Receiver (HTTP Server) | ✅ |
-| 8 | LangSmith Integration | ✅ |
-| 9 | LangGraph Studio Config | ✅ |
-| 10 | Integration Test | ✅ |
+### 에이전트 개발 우선순위
+1. ✅ **LLM 연동** - 각 에이전트가 Claude로 분석
+2. 🔜 **로그인 플로우** - id/pwd로 실제 로그인 후 분석
+3. 📋 **Spec 비교** - 비용 절감용 캐시 (나중에)
 
-### 구현된 파일 구조
+### CLI 사용법
+
+```bash
+# 환경 변수 설정 필수
+echo "ANTHROPIC_API_KEY=your-key" > .env
+
+# 개별 에이전트 실행
+pnpm agent:dom        # DOM 에이전트만
+pnpm agent:network    # Network 에이전트만
+pnpm agent:policy     # Policy 에이전트만
+
+# 전체 병렬 실행
+pnpm agent:all
+```
+
+### mock-input.json 구조
+
+```json
+{
+  "systemCode": "vendor-sample",
+  "url": "https://example.com",
+  "id": "test-user",
+  "pwd": "test-pass",
+  "discountId": "DISCOUNT001",
+  "carNum": "12가3456"
+}
+```
+
+| 필드 | 설명 | LLM 전달 |
+|------|------|----------|
+| systemCode | 장비사 식별자 (구 vendorId) | ✅ |
+| url | 장비사 사이트 URL | ✅ |
+| id | 로그인 아이디 | ❌ (HasCredentials만) |
+| pwd | 로그인 비밀번호 | ❌ 절대 안넘김 |
+| discountId | 할인키 (구 discountKey) | ✅ |
+| carNum | 차량번호 (구 vehicleNumber) | ✅ |
+
+### 에이전트별 LLM 분석 내용
+
+| Agent | Playwright 캡처 | LLM 분석 | 출력 |
+|-------|----------------|----------|------|
+| **DOM** | HTML 스냅샷 | 로그인폼, 검색폼, 할인버튼 셀렉터 | JSON (pageType, elements, issues) |
+| **Network** | 요청/응답 로그 | API 엔드포인트, 파라미터 패턴 | JSON (apiType, endpoints, issues) |
+| **Policy** | - | 설정값 포맷 검증 | JSON (validations, recommendations) |
+
+### 보안 원칙 (구현됨)
+
+```
+LLM에게 절대 안 넘기는 것:
+- pwd (비밀번호)
+- token, session, cookie
+- Authorization 헤더
+
+LLM에게 넘기는 것:
+- systemCode, url, discountId, carNum
+- HTML (script/style 제거)
+- 요청/응답 (민감정보 마스킹: "token":"***")
+```
+
+### 파일 구조
+
 ```
 src/
-├── index.ts                      # 진입점 (Express 서버 시작)
+├── cli.ts                        # 🆕 CLI 진입점 (LLM 연동)
+├── index.ts                      # HTTP 서버 진입점
 ├── schemas/                      # Zod 스키마
-│   ├── failure-alert.schema.ts
-│   ├── site-analysis.schema.ts
-│   ├── diagnosis.schema.ts
-│   └── index.ts
 ├── analyzer/                     # Playwright 분석기
-│   ├── analyzer.ts
-│   └── index.ts
 ├── engine/                       # 휴리스틱 엔진
-│   ├── heuristic-engine.ts
-│   └── index.ts
 ├── dispatcher/                   # Slack 발송 (mock 지원)
-│   ├── slack-dispatcher.ts
-│   └── index.ts
 ├── graph/                        # LangGraph 워크플로우
-│   ├── state.ts                  # Annotation 기반 상태
-│   ├── nodes.ts                  # 노드 함수들
-│   ├── workflow.ts               # StateGraph 정의
-│   ├── agents/
-│   │   ├── dom-agent.ts          # DOM 분석 에이전트
-│   │   ├── network-agent.ts      # 네트워크 분석 에이전트
-│   │   └── policy-agent.ts       # 정책 검증 에이전트
-│   └── index.ts
+│   ├── agents/                   # 에이전트 (stub → LLM 연동 중)
+│   └── ...
 ├── alert-receiver/               # HTTP 서버
-│   ├── server.ts                 # Express 앱, /webhook/alert
-│   ├── __tests__/server.test.ts
-│   └── index.ts
-└── __tests__/
-    └── integration.test.ts       # 전체 플로우 통합 테스트
-langgraph.json                    # LangGraph Studio 설정
+└── __tests__/                    # 통합 테스트
+
+mock-input.json                   # 🆕 수동 입력 데이터
 ```
 
-### 테스트 실행
-```bash
-pnpm test:run                    # 전체 테스트 (28개)
-pnpm test:run src/graph          # 워크플로우 테스트
-pnpm test:run src/__tests__      # 통합 테스트
+### 다음 작업: 로그인 플로우
+
+**목표**: id/pwd로 실제 로그인 후 인증된 페이지 분석
+
+```
+현재: url 접속 → 퍼블릭 페이지만 분석
+목표: url 접속 → 로그인 → 대시보드/할인 페이지 분석
 ```
 
-### 서버 실행
-```bash
-# 환경 변수 설정 (API 키 필요)
-cp .env.example .env
-# .env 파일에 API 키 입력
+**구현 계획**:
+1. 로그인 폼 자동 감지 (DOM Agent 결과 활용)
+2. id/pwd로 로그인 수행 (Playwright)
+3. 로그인 성공 확인 후 타겟 페이지 분석
+4. 세션 유지하며 DOM/Network 캡처
 
-# 서버 실행
-pnpm dev
-```
+### 테스트 대기 중
 
-### API 엔드포인트
-- `GET /health` - 서버 상태 확인
-- `POST /webhook/alert` - 실패 알림 처리
-  ```json
-  { "vendorId": "vendor-sample" }
-  ```
-
-### 다음 단계 (Phase 2)
-1. **API 키 설정** - `.env` 파일에 실제 키 입력:
-   - `ANTHROPIC_API_KEY` (Claude LLM용)
-   - `LANGSMITH_API_KEY` (트레이싱용)
-   - `SLACK_WEBHOOK_URL` (실제 슬랙 연동)
-2. **실제 입력 테스트** - 서버 실행 후 `/webhook/alert`에 요청
-3. **LLM 에이전트 고도화** - DOM/Network/Policy 에이전트에 실제 LLM 로직 추가
-4. **GitHub PR 자동 생성** - SIGNATURE_CHANGED 시 Draft PR 생성
-
-### 확인 필요
-- 슬랙 웹훅 설정 방법 (기존 시스템)
-- 배치 레포 위치 및 코드 구조
-- 장비사 로그인 정보 접근 방법
-- 배포 환경 결정
+사용자가 `pnpm agent:all` 실행 후 결과 확인 예정.
+결과에 따라 로그인 플로우 구현 진행.
 
 ---
 

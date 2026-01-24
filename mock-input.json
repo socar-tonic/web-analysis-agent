@@ -1,0 +1,8 @@
+{
+  "systemCode": "vendor-sample",
+  "url": "https://example.com",
+  "id": "test-user",
+  "pwd": "test-pass",
+  "discountId": "DISCOUNT001",
+  "carNum": "12가3456"
+}
