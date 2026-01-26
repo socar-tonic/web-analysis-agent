@@ -1,4 +1,4 @@
-import { LoginSpec } from '../schemas';
+import { LoginSpec } from '../schemas/index.js';
 
 export interface SpecChanges {
   hasChanges: boolean;

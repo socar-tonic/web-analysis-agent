@@ -1,2 +1,2 @@
 // src/security/index.ts
-export * from './credential-manager';
+export * from './credential-manager.js';
