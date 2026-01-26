@@ -1334,10 +1334,19 @@ async function runLoginAgentCommand(input: MockInput, llm: BaseChatModel): Promi
   console.log('\n  [Result]');
   console.log(`    Status: ${result.status}`);
   console.log(`    Confidence: ${result.confidence}`);
-  if (result.changes?.hasChanges) {
-    console.log(`    ⚠️ Changes detected:`);
-    result.changes.formChanges?.forEach(c => console.log(`      - ${c}`));
-    result.changes.apiChanges?.forEach(c => console.log(`      - ${c}`));
+  if (result.changes?.codeWillBreak) {
+    console.log(`    🚨 CODE WILL BREAK:`);
+    if (result.changes.summary) {
+      console.log(`      ${result.changes.summary}`);
+    }
+    result.changes.breakingChanges?.forEach(c => console.log(`      - ${c}`));
+  } else if (result.changes?.hasChanges) {
+    console.log(`    ⚠️ Changes detected (non-breaking):`);
+    if (result.changes.summary) {
+      console.log(`      ${result.changes.summary}`);
+    }
+  } else if (result.changes?.summary) {
+    console.log(`    ✅ ${result.changes.summary}`);
   }
 
   return {

@@ -19,11 +19,21 @@ export const LoginResultSchema = z.object({
     errorMessage: z.string().optional(),
   }),
 
-  // 변경 감지 (기존 Spec과 비교)
+  // 변경 감지 (기존 코드가 깨지는지 검증)
   changes: z.object({
     hasChanges: z.boolean(),
-    formChanges: z.array(z.string()).optional(),  // ['usernameSelector changed', ...]
-    apiChanges: z.array(z.string()).optional(),   // ['endpoint changed', ...]
+    codeWillBreak: z.boolean().optional(),
+    breakingChanges: z.array(z.string()).optional(),
+    summary: z.string().optional(),
+  }).optional(),
+
+  // 세션 정보 (다음 에이전트가 사용)
+  session: z.object({
+    type: z.enum(['jwt', 'cookie', 'session', 'mixed']).optional(),
+    accessToken: z.string().optional(),
+    cookies: z.array(z.string()).optional(),
+    localStorage: z.record(z.string()).optional(),
+    sessionStorage: z.record(z.string()).optional(),
   }).optional(),
 
   timestamp: z.string().datetime(),

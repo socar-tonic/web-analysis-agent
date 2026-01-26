@@ -5,6 +5,7 @@ import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { HumanMessage, SystemMessage, AIMessage, ToolMessage } from '@langchain/core/messages';
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
+import { writeFileSync } from 'fs';
 import { CredentialManager } from '../security/index.js';
 import { SpecStore, SpecChanges } from '../specs/index.js';
 import { LoginSpec, LoginResult } from '../schemas/index.js';
@@ -18,6 +19,14 @@ interface LoginAgentConfig {
   maxIterations?: number;
 }
 
+interface SessionInfo {
+  type?: 'jwt' | 'cookie' | 'session' | 'mixed';
+  accessToken?: string;
+  cookies?: string[];
+  localStorage?: Record<string, string>;
+  sessionStorage?: Record<string, string>;
+}
+
 interface ParsedAnalysis {
   status?: LoginResult['status'];
   confidence?: number;
@@ -25,6 +34,7 @@ interface ParsedAnalysis {
   form?: LoginSpec['form'];
   api?: LoginSpec['api'];
   successIndicators?: LoginSpec['successIndicators'];
+  session?: SessionInfo;
   errorMessage?: string;
 }
 
@@ -110,11 +120,8 @@ export class LoginAgent {
         successIndicators: analysis.successIndicators || { urlPattern: urlAfter },
       } as LoginSpec;
 
-      // Compare with existing spec
-      const changes: SpecChanges = this.config.specStore.compare(this.config.systemCode, spec);
-
-      // Save new spec
-      this.config.specStore.save(spec);
+      // Compare with existing spec using LLM (read-only, never overwrite)
+      const changes: SpecChanges = await this.config.specStore.compare(this.config.systemCode, spec, this.config.llm);
 
       const result: LoginResult = {
         status: analysis.status || 'UNKNOWN_ERROR',
@@ -126,6 +133,7 @@ export class LoginAgent {
           errorMessage: analysis.errorMessage,
         },
         changes,
+        session: analysis.session,
         timestamp,
       };
 
@@ -150,8 +158,12 @@ export class LoginAgent {
   private async buildTools(): Promise<any[]> {
     const { tools: mcpTools } = await this.mcpClient!.listTools();
 
+    // Log all available MCP tools
+    console.log('  [MCP Tools Available]');
+    mcpTools.forEach(t => console.log(`    - ${t.name}`));
+
     // Filter MCP tools - exclude browser_type (we use secure_fill instead)
-    const allowedTools = ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_wait_for', 'browser_press_key'];
+    const allowedTools = ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_wait_for', 'browser_press_key', 'browser_take_screenshot', 'browser_network_requests', 'browser_evaluate'];
     const filtered = mcpTools.filter(t => {
       const schema = t.inputSchema as any;
       const hasParams = schema?.properties && Object.keys(schema.properties).length > 0;
@@ -176,12 +188,20 @@ export class LoginAgent {
         if (!value) return `Error: No credential for ${this.config.systemCode}`;
 
         try {
-          await this.mcpClient!.callTool({
+          console.log(`      [secure_fill] field=${field}, element=${element}, valueLen=${value.length}`);
+          const result = await this.mcpClient!.callTool({
             name: 'browser_type',
-            arguments: { element, text: value, submit: false },
+            arguments: { ref: element, text: value, submit: false },
           });
-          return `Filled ${field} field`;
+          const content = result.content as any[];
+          const resultText = content?.map(c => c.text || '').join('\n') || '';
+          console.log(`      [secure_fill result] ${resultText.slice(0, 200)}`);
+          if (resultText.toLowerCase().includes('error')) {
+            return `Error filling ${field}: ${resultText}`;
+          }
+          return `Filled ${field} field successfully`;
         } catch (e) {
+          console.log(`      [secure_fill error] ${(e as Error).message}`);
           return `Error: ${(e as Error).message}`;
         }
       },
@@ -224,7 +244,21 @@ export class LoginAgent {
       async (params) => {
         try {
           const result = await this.mcpClient!.callTool({ name: mcpTool.name, arguments: params });
-          const text = (result.content as any[])?.map(c => c.text || '').join('\n') || 'Done';
+          const contents = result.content as any[];
+
+          // Handle screenshot - save image to file
+          if (mcpTool.name === 'browser_take_screenshot') {
+            for (const c of contents) {
+              if (c.type === 'image' && c.data) {
+                const filename = `debug-screenshot-${Date.now()}.png`;
+                writeFileSync(filename, Buffer.from(c.data, 'base64'));
+                console.log(`      [screenshot saved] ${filename}`);
+                return `Screenshot saved to ${filename}`;
+              }
+            }
+          }
+
+          const text = contents?.map(c => c.text || '').join('\n') || 'Done';
           return text.slice(0, 5000);
         } catch (e) {
           return `Error: ${(e as Error).message}`;
@@ -243,15 +277,26 @@ SystemCode: ${this.config.systemCode}
 2. Find login form (username, password, submit button)
 3. Fill credentials using secure_fill_credential
 4. Click submit
-5. Analyze result
+5. Wait 3 seconds, then take screenshot
+6. Use browser_network_requests to capture API calls made during login
+7. If login SUCCESS, extract session info:
+   - browser_evaluate: document.cookie
+   - browser_evaluate: JSON.stringify(localStorage)
+   - browser_evaluate: JSON.stringify(sessionStorage)
+8. Take snapshot and analyze result
 
 **TOOLS:**
 - browser_navigate, browser_snapshot, browser_click, browser_wait_for
+- browser_take_screenshot (use after login to capture result)
+- browser_network_requests (use after login to capture API calls)
+- browser_evaluate (use to extract cookies, localStorage, sessionStorage)
 - secure_fill_credential(field: "username"|"password", element: "ref from snapshot")
 
 **IMPORTANT:**
 - Use secure_fill_credential for ALL credential inputs
 - NEVER type passwords directly
+- After login, ALWAYS call browser_network_requests to capture API endpoints
+- After login SUCCESS, ALWAYS extract session info using browser_evaluate
 - After login, determine: SUCCESS / INVALID_CREDENTIALS / FORM_CHANGED
 
 **FINAL RESPONSE (JSON):**
@@ -263,6 +308,18 @@ SystemCode: ${this.config.systemCode}
     "usernameSelector": "actual selector used",
     "passwordSelector": "actual selector used",
     "submitSelector": "actual selector used"
+  },
+  "api": {
+    "loginEndpoint": "captured login API endpoint if any",
+    "method": "POST|GET",
+    "otherEndpoints": ["other API calls captured"]
+  },
+  "session": {
+    "type": "jwt|cookie|session|mixed",
+    "accessToken": "token if found in API response",
+    "cookies": ["relevant auth cookies"],
+    "localStorage": {"key": "value if auth related"},
+    "sessionStorage": {"key": "value if auth related"}
   },
   "successIndicators": { "urlPattern": "..." },
   "errorMessage": "if any"
