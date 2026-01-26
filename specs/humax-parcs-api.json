@@ -1,7 +1,7 @@
 {
   "systemCode": "humax-parcs-api",
   "url": "https://console.humax-parcs.com",
-  "baseUrl": "https://mhp.humax-parcs.com:8754",
+  "baseUrl": "https://mhp.humax-parcs.com:8755",
   "capturedAt": "2026-01-26T00:00:00.000Z",
   "version": 1,
 
@@ -13,7 +13,7 @@
       "contentType": "application/x-www-form-urlencoded",
       "requestFields": {
         "grant_type": "password",
-        "usernameee": "{{env.id}}",
+        "username": "{{env.id}}",
         "password": "{{env.pwd}}"
       },
       "responseFields": ["access_token"]

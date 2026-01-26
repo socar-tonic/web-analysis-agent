@@ -32,8 +32,8 @@ export const LoginResultSchema = z.object({
     type: z.enum(['jwt', 'cookie', 'session', 'mixed']).optional(),
     accessToken: z.string().optional(),
     cookies: z.array(z.string()).optional(),
-    localStorage: z.record(z.string()).optional(),
-    sessionStorage: z.record(z.string()).optional(),
+    localStorage: z.record(z.string(), z.string()).optional(),
+    sessionStorage: z.record(z.string(), z.string()).optional(),
   }).optional(),
 
   timestamp: z.string().datetime(),

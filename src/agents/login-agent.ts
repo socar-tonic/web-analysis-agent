@@ -2,10 +2,11 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import { HumanMessage, SystemMessage, AIMessage, ToolMessage } from '@langchain/core/messages';
-import { tool } from '@langchain/core/tools';
+import { HumanMessage, AIMessage, BaseMessage } from '@langchain/core/messages';
+import { tool, StructuredToolInterface } from '@langchain/core/tools';
 import { z } from 'zod';
 import { writeFileSync } from 'fs';
+import { createReactAgent } from '@langchain/langgraph/prebuilt';
 import { CredentialManager } from '../security/index.js';
 import { SpecStore, SpecChanges } from '../specs/index.js';
 import { LoginSpec, LoginResult } from '../schemas/index.js';
@@ -73,40 +74,43 @@ export class LoginAgent {
       const tools = await this.buildTools();
       console.log(`  [LoginAgent] ${tools.length} tools ready`);
 
-      // Run agent loop
-      const messages = this.buildInitialMessages();
-      let iteration = 0;
+      // Create LangGraph ReAct agent
+      const systemPrompt = this.buildSystemPrompt();
+      const agent = createReactAgent({
+        llm: this.config.llm,
+        tools: tools as StructuredToolInterface[],
+        prompt: systemPrompt,
+      });
+
+      console.log('\n  [LangGraph Agent] Starting...');
+
+      // Run agent with recursion limit
+      const agentResult = await agent.invoke(
+        { messages: [new HumanMessage('Start: Navigate to the login page.')] },
+        { recursionLimit: this.config.maxIterations * 2 } // Each tool call = 2 steps
+      );
+
+      // Extract final response from last AI message
+      const messages = agentResult.messages as BaseMessage[];
       let finalResponse = '';
-
-      console.log('\n  [Agent Loop]');
-      const maxIter = this.config.maxIterations;
-      while (iteration < maxIter) {
-        iteration++;
-        console.log(`  --- Iteration ${iteration}/${maxIter} ---`);
-
-        const llmWithTools = this.config.llm.bindTools!(tools);
-        const response = await llmWithTools.invoke(messages);
-        messages.push(response);
-
-        const toolCalls = response.tool_calls;
-        if (!toolCalls || toolCalls.length === 0) {
-          finalResponse = response.content as string;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        if (msg instanceof AIMessage && typeof msg.content === 'string' && msg.content.trim()) {
+          finalResponse = msg.content;
           break;
         }
+      }
 
-        for (const tc of toolCalls) {
-          console.log(`    -> ${tc.name}`);
-          const result = await this.executeTool(tc, tools);
-          messages.push(new ToolMessage({ tool_call_id: tc.id!, content: result }));
-
-          // Update URL tracking
-          if (tc.name === 'browser_navigate') urlBefore = tc.args.url;
-          if (result.includes('Page URL:')) {
-            const match = result.match(/Page URL: ([^\n]+)/);
-            if (match) urlAfter = match[1];
-          }
+      // Extract URL tracking from messages
+      for (const msg of messages) {
+        const content = typeof msg.content === 'string' ? msg.content : '';
+        if (content.includes('Page URL:')) {
+          const match = content.match(/Page URL: ([^\n]+)/);
+          if (match) urlAfter = match[1];
         }
       }
+
+      console.log(`  [LangGraph Agent] Completed with ${messages.length} messages`);
 
       // Parse LLM's final analysis
       const analysis = this.parseAnalysis(finalResponse);
@@ -123,7 +127,7 @@ export class LoginAgent {
       // Compare with existing spec using LLM (read-only, never overwrite)
       const changes: SpecChanges = await this.config.specStore.compare(this.config.systemCode, spec, this.config.llm);
 
-      const result: LoginResult = {
+      const loginResult: LoginResult = {
         status: analysis.status || 'UNKNOWN_ERROR',
         confidence: analysis.confidence || 0.5,
         details: {
@@ -137,7 +141,7 @@ export class LoginAgent {
         timestamp,
       };
 
-      return { result, spec };
+      return { result: loginResult, spec };
 
     } catch (error) {
       return {
@@ -189,11 +193,11 @@ export class LoginAgent {
 
         try {
           console.log(`      [secure_fill] field=${field}, element=${element}, valueLen=${value.length}`);
-          const result = await this.mcpClient!.callTool({
+          const mcpResult = await this.mcpClient!.callTool({
             name: 'browser_type',
             arguments: { ref: element, text: value, submit: false },
           });
-          const content = result.content as any[];
+          const content = mcpResult.content as any[];
           const resultText = content?.map(c => c.text || '').join('\n') || '';
           console.log(`      [secure_fill result] ${resultText.slice(0, 200)}`);
           if (resultText.toLowerCase().includes('error')) {
@@ -243,8 +247,8 @@ export class LoginAgent {
     return tool(
       async (params) => {
         try {
-          const result = await this.mcpClient!.callTool({ name: mcpTool.name, arguments: params });
-          const contents = result.content as any[];
+          const toolResult = await this.mcpClient!.callTool({ name: mcpTool.name, arguments: params });
+          const contents = toolResult.content as any[];
 
           // Handle screenshot - save image to file
           if (mcpTool.name === 'browser_take_screenshot') {
@@ -268,8 +272,8 @@ export class LoginAgent {
     );
   }
 
-  private buildInitialMessages() {
-    const systemPrompt = `You are a login flow analyzer for: ${this.config.url}
+  private buildSystemPrompt(): string {
+    return `You are a login flow analyzer for: ${this.config.url}
 SystemCode: ${this.config.systemCode}
 
 **TASK:**
@@ -324,21 +328,6 @@ SystemCode: ${this.config.systemCode}
   "successIndicators": { "urlPattern": "..." },
   "errorMessage": "if any"
 }`;
-
-    return [
-      new SystemMessage(systemPrompt),
-      new HumanMessage('Start: Navigate to the login page.'),
-    ] as (SystemMessage | HumanMessage | AIMessage | ToolMessage)[];
-  }
-
-  private async executeTool(tc: any, tools: any[]): Promise<string> {
-    const t = tools.find(x => x.name === tc.name);
-    if (!t) return `Error: Tool not found`;
-    try {
-      return await t.invoke(tc.args);
-    } catch (e) {
-      return `Error: ${(e as Error).message}`;
-    }
   }
 
   private parseAnalysis(response: string): ParsedAnalysis {

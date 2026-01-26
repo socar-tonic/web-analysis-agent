@@ -1,4 +1,4 @@
-import express, { Request, Response } from 'express';
+import express, { Request, Response, Express } from 'express';
 import { FailureAlertSchema } from '../schemas/index.js';
 import { createWorkflow } from '../graph/index.js';
 
@@ -7,7 +7,7 @@ interface ServerConfig {
   vendorUrlMap: Record<string, string>;
 }
 
-export function createServer(config: ServerConfig) {
+export function createServer(config: ServerConfig): Express {
   const app = express();
   app.use(express.json());
 

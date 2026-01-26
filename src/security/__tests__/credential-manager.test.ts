@@ -1,6 +1,6 @@
 // src/security/__tests__/credential-manager.test.ts
 import { describe, it, expect } from 'vitest';
-import { CredentialManager } from '../credential-manager';
+import { CredentialManager } from '../credential-manager.js';
 
 describe('CredentialManager', () => {
   it('should store and retrieve credentials', () => {

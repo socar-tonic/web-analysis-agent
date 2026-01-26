@@ -811,6 +811,7 @@ Respond ONLY with JSON, no explanation:
 
     await page.waitForTimeout(3000);
     const urlAfter = page.url();
+    const urlChanged = urlBefore !== urlAfter;
 
     // Step 4: Check login result
     console.log(`  Step 4: Checking login result...`);
@@ -1332,26 +1333,32 @@ async function runLoginAgentCommand(input: MockInput, llm: BaseChatModel): Promi
   const { result, spec } = await agent.run();
 
   console.log('\n  [Result]');
-  console.log(`    Status: ${result.status}`);
-  console.log(`    Confidence: ${result.confidence}`);
+  console.log(`    로그인 시도: ${result.status} (confidence: ${result.confidence})`);
+
+  // 핵심 지표: 기존 코드 호환성
+  const codeCompatible = !result.changes?.codeWillBreak;
+
   if (result.changes?.codeWillBreak) {
-    console.log(`    🚨 CODE WILL BREAK:`);
+    console.log(`    🚨 코드 호환성: 실패 - 수정 필요`);
     if (result.changes.summary) {
       console.log(`      ${result.changes.summary}`);
     }
     result.changes.breakingChanges?.forEach(c => console.log(`      - ${c}`));
   } else if (result.changes?.hasChanges) {
-    console.log(`    ⚠️ Changes detected (non-breaking):`);
+    console.log(`    ✅ 코드 호환성: 성공 (비-파괴적 변경 감지)`);
     if (result.changes.summary) {
       console.log(`      ${result.changes.summary}`);
     }
-  } else if (result.changes?.summary) {
-    console.log(`    ✅ ${result.changes.summary}`);
+  } else {
+    console.log(`    ✅ 코드 호환성: 성공 - 변경 없음`);
+    if (result.changes?.summary) {
+      console.log(`      ${result.changes.summary}`);
+    }
   }
 
   return {
     agent: 'login',
-    success: result.status === 'SUCCESS',
+    success: codeCompatible,  // 코드 호환성 기준으로 성공 판정
     analysis: JSON.stringify({ result, spec }, null, 2),
     data: { result, spec },
   };
@@ -1522,7 +1529,7 @@ Start by navigating to the URL and taking a snapshot.`;
       console.log(`\n  --- Iteration ${iteration}/${MAX_ITERATIONS} ---`);
 
       // Call LLM with tools
-      const llmWithTools = llm.bindTools(langchainTools);
+      const llmWithTools = llm.bindTools!(langchainTools);
       const response = await llmWithTools.invoke(messages);
 
       messages.push(response);

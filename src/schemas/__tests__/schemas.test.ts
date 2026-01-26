@@ -4,7 +4,7 @@ import {
   SiteAnalysisSchema,
   DiagnosisSchema,
   DiagnosisType,
-} from '../index';
+} from '../index.js';
 
 describe('FailureAlertSchema', () => {
   it('should parse valid failure alert', () => {

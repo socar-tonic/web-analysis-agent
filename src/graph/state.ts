@@ -35,11 +35,13 @@ export const AgentStateAnnotation = Annotation.Root({
 
   // Workflow control
   requiresLLMAnalysis: Annotation<boolean>({
+    value: (_current, update) => update,
     default: () => false,
   }),
 
   // Output
   notificationSent: Annotation<boolean>({
+    value: (_current, update) => update,
     default: () => false,
   }),
   error: Annotation<string | undefined>,
