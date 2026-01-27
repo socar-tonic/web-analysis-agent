@@ -200,6 +200,29 @@ export class LoginAgent {
       // Parse LLM's final analysis
       const analysis = this.parseAnalysis(finalResponse);
 
+      // Check if LLM reported a connection error in errorMessage
+      // (Playwright MCP returns navigation errors as tool results, not exceptions)
+      if (analysis.errorMessage) {
+        const connectionInfo = classifyConnectionError(new Error(analysis.errorMessage));
+        if (connectionInfo.isConnectionError) {
+          console.log(`  [LoginAgent] Connection error detected in response: ${connectionInfo.errorType}`);
+          return {
+            result: {
+              status: 'CONNECTION_ERROR',
+              confidence: connectionInfo.confidence,
+              details: {
+                urlBefore,
+                urlAfter: urlBefore,
+                urlChanged: false,
+                errorMessage: connectionInfo.summary,
+              },
+              timestamp,
+            },
+            spec: capturedSpec as LoginSpec,
+          };
+        }
+      }
+
       // Build final spec
       const spec: LoginSpec = {
         ...capturedSpec,
