@@ -11,7 +11,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
-import { LoginAgent } from './agents/index.js';
+import { LoginAgent, SearchAgent } from './agents/index.js';
 import { CredentialManager } from './security/index.js';
 import { SpecStore } from './specs/index.js';
 
@@ -1364,6 +1364,91 @@ async function runLoginAgentCommand(input: MockInput, llm: BaseChatModel): Promi
   };
 }
 
+// SessionInfo type for session handoff between agents
+interface SessionInfo {
+  type?: 'jwt' | 'cookie' | 'session' | 'mixed';
+  accessToken?: string;
+  cookies?: string[];
+  localStorage?: Record<string, string>;
+  sessionStorage?: Record<string, string>;
+}
+
+// SearchAgent command - uses session from LoginAgent
+async function runSearchAgentCommand(
+  input: MockInput,
+  session: SessionInfo,
+  llm: BaseChatModel
+): Promise<AgentResult> {
+  console.log(`\n[Search Agent] Starting for: ${input.url}`);
+
+  const specStore = new SpecStore();
+
+  const agent = new SearchAgent({
+    systemCode: input.systemCode,
+    url: input.url,
+    carNum: input.carNum,
+    session,
+    specStore,
+    llm,
+  });
+
+  const { result, spec } = await agent.run();
+
+  console.log('\n  [Result]');
+  console.log(`    검색 결과: ${result.status} (confidence: ${result.confidence})`);
+
+  if (result.details.vehicleFound && result.vehicle) {
+    console.log(`    [OK] 차량 발견: ${result.vehicle.plateNumber}`);
+    console.log(`      입차 시간: ${result.vehicle.inTime}`);
+  } else if (result.status === 'NOT_FOUND') {
+    console.log(`    [INFO] 차량 없음 (정상 응답)`);
+  } else {
+    console.log(`    [FAIL] 검색 실패: ${result.details.errorMessage || result.status}`);
+  }
+
+  const codeCompatible = !result.changes?.codeWillBreak;
+
+  if (result.changes?.codeWillBreak) {
+    console.log(`    [ALERT] 코드 호환성: 실패 - 수정 필요`);
+    result.changes.breakingChanges?.forEach(c => console.log(`      - ${c}`));
+  } else {
+    console.log(`    [OK] 코드 호환성: 성공`);
+  }
+
+  return {
+    agent: 'search',
+    success: codeCompatible,
+    analysis: JSON.stringify({ result, spec }, null, 2),
+    data: { result, spec },
+  };
+}
+
+// Combined Login -> Search flow
+async function runLoginAndSearchCommand(input: MockInput, llm: BaseChatModel): Promise<AgentResult[]> {
+  console.log(`\n[Login -> Search Flow] Starting...`);
+
+  // Step 1: Login
+  const loginResult = await runLoginAgentCommand(input, llm);
+
+  if (!loginResult.success || loginResult.data?.result?.status !== 'SUCCESS') {
+    console.log('\n  [Flow] Login failed, skipping search');
+    return [loginResult];
+  }
+
+  const session = loginResult.data.result.session;
+  if (!session) {
+    console.log('\n  [Flow] No session captured, skipping search');
+    return [loginResult];
+  }
+
+  console.log('\n  [Flow] Login successful, proceeding to search...');
+
+  // Step 2: Search with captured session
+  const searchResult = await runSearchAgentCommand(input, session, llm);
+
+  return [loginResult, searchResult];
+}
+
 // Run agents in parallel
 async function runAllAgents(input: MockInput, llm: BaseChatModel): Promise<AgentResult[]> {
   console.log(`\n[Parallel Execution] Running all agents...`);
@@ -1669,6 +1754,11 @@ async function main() {
     results.push(await runPolicyAgent(input, llm));
   } else if (agentArg === 'dom-mcp') {
     results.push(await runDomMcpAgent(input, llm));
+  } else if (agentArg === 'search') {
+    // Search requires prior login - run combined flow
+    results = await runLoginAndSearchCommand(input, llm);
+  } else if (agentArg === 'login-search') {
+    results = await runLoginAndSearchCommand(input, llm);
   }
 
   // Summary
