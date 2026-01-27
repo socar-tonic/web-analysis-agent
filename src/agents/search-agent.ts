@@ -236,7 +236,7 @@ export class SearchAgent {
             for (const cookie of session.cookies) {
               await this.mcpClient!.callTool({
                 name: 'browser_evaluate',
-                arguments: { expression: `document.cookie = "${cookie}"` },
+                arguments: { expression: `document.cookie = ${JSON.stringify(cookie)}` },
               });
             }
             console.log(`      [inject_session] Injected ${session.cookies.length} cookies`);
@@ -247,7 +247,7 @@ export class SearchAgent {
             for (const [key, value] of Object.entries(session.localStorage)) {
               await this.mcpClient!.callTool({
                 name: 'browser_evaluate',
-                arguments: { expression: `localStorage.setItem("${key}", "${value}")` },
+                arguments: { expression: `localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(value)})` },
               });
             }
             console.log(`      [inject_session] Injected localStorage keys`);
@@ -258,7 +258,7 @@ export class SearchAgent {
             for (const [key, value] of Object.entries(session.sessionStorage)) {
               await this.mcpClient!.callTool({
                 name: 'browser_evaluate',
-                arguments: { expression: `sessionStorage.setItem("${key}", "${value}")` },
+                arguments: { expression: `sessionStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(value)})` },
               });
             }
             console.log(`      [inject_session] Injected sessionStorage keys`);
