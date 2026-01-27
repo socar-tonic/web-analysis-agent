@@ -1,0 +1,162 @@
+{
+  "systemCode": "aj",
+  "url": "{{env.url}}",
+  "capturedAt": "2026-01-27T12:00:00.000Z",
+  "version": 1,
+
+  "implementationType": "hybrid",
+  "description": "AJ 주차 할인 시스템 - Form POST + HTML 파싱 방식",
+
+  "steps": {
+    "login": {
+      "type": "form-post",
+      "endpoint": "/login",
+      "method": "POST",
+      "contentType": "application/x-www-form-urlencoded",
+      "requestFields": {
+        "j_username": "{{env.id}}",
+        "j_password": "{{env.pwd}}"
+      },
+      "followRedirects": true,
+      "sessionType": "cookie-jar",
+      "failureIndicators": {
+        "responseContains": ["로그인 정보가 잘못 되었습니다", "잘못 입력했습니다"]
+      }
+    },
+
+    "search": {
+      "type": "form-post",
+      "endpoint": "/discount/carSearch.cs",
+      "method": "POST",
+      "contentType": "application/x-www-form-urlencoded",
+      "requestFields": {
+        "carNumber": "{{carNum.slice(-4)}}",
+        "from": "{{moment().format('YYYY-MM-DD')}}",
+        "formHH": "00"
+      },
+      "followRedirects": true,
+      "parsing": {
+        "type": "html",
+        "selectors": {
+          "rows": "tr[onclick]",
+          "pKey": "$(row).attr('onclick') -> extract pKey param",
+          "carNum": "$(row).find('td').eq(1).find('b').text()",
+          "enterTime": "date + ' ' + time from $(row).find('td').eq(1).find('p')"
+        },
+        "fallback": {
+          "description": "미드타운 차량 상세 페이지 대체 파싱",
+          "rows": "table:eq(1) > tbody > tr",
+          "pKey": "$(row).find('td').eq(0).find('a').prop('href') -> extract pKey",
+          "carNum": "parse from text containing '차량번호'",
+          "enterTime": "parse from text after 차량번호 line"
+        }
+      },
+      "responseFields": ["pKey", "carNum", "enterTime"]
+    },
+
+    "discount": {
+      "type": "api",
+      "endpoint": "/discount/discountApplyProc.cs",
+      "method": "GET",
+      "params": {
+        "pKey": "{{parkingInfo.pKey}}",
+        "dCode": "{{ticketInfo.discountId}}",
+        "dKind": "매수차감",
+        "fDays": "",
+        "remark": ""
+      },
+      "followRedirects": true,
+      "parsing": {
+        "type": "html",
+        "selectors": {
+          "result": "tr -> text content"
+        }
+      }
+    },
+
+    "getHistory": {
+      "type": "form-post",
+      "endpoint": "/report/reportList.cs",
+      "method": "POST",
+      "contentType": "application/x-www-form-urlencoded",
+      "requestFields": {
+        "from": "{{moment(regDate, 'YYMMDD').format('YYYY-MM-DD')}}",
+        "fromHH": "00",
+        "fromMM": "00",
+        "to": "{{moment().format('YYYY-MM-DD')}}",
+        "toHH": "23",
+        "toMM": "59",
+        "dType": "할인승인",
+        "sortJIN": "업체ID",
+        "dCriterion": "입차기준",
+        "remark": ""
+      },
+      "parsing": {
+        "type": "html",
+        "selectors": {
+          "rows": "#dpList > tbody > tr",
+          "carNum": "$(row).find('td').eq(0).text()",
+          "enterTime": "$(row).find('td').eq(1).text()"
+        }
+      },
+      "responseFields": ["carNum", "enterTime"]
+    }
+  },
+
+  "form": {
+    "usernameSelector": "input[name='j_username']",
+    "passwordSelector": "input[name='j_password']",
+    "submitSelector": "button[type='submit'], input[type='submit']"
+  },
+
+  "successIndicators": {
+    "login": {
+      "notContains": ["로그인 정보가 잘못 되었습니다", "잘못 입력했습니다"],
+      "hasCookieJar": true
+    },
+    "search": {
+      "hasResults": true,
+      "responseFields": ["pKey", "carNum", "enterTime"]
+    },
+    "discount": {
+      "responseReceived": true
+    }
+  },
+
+  "batchCodeRef": {
+    "handler": "src/v1/biz/service/aj/handler/aj.js",
+    "index": "src/v1/biz/service/aj/index.js",
+    "consecutiveDiscount": "src/v1/biz/service/aj/consecutiveDiscount.js"
+  },
+
+  "hints": {
+    "login": {
+      "usernameSelector": "textbox[name='ID 입력']",
+      "passwordSelector": "textbox[name='비밀번호 입력']",
+      "submitSelector": "button[name='로그인']",
+      "failureTexts": ["로그인 정보가 잘못 되었습니다", "잘못 입력했습니다"]
+    },
+    "search": {
+      "description": "숫자 키패드(7,8,9,4,5,6,1,2,3,0,C,←)로 차량번호 뒤 4자리 입력 후 조회 버튼 클릭",
+      "inputMethod": "keypad",
+      "keypadButtons": ["7","8","9","4","5","6","1","2","3","C","0","←"],
+      "searchButtonText": "조회",
+      "vehicleNumberSlice": [-4, null],
+      "resultRowSelector": "tr[onclick]",
+      "fallbackSelectors": ["table:eq(1) > tbody > tr"]
+    },
+    "quirks": {
+      "dismissAlerts": true,
+      "specialCases": ["미드타운: 차량 상세 페이지 구조 다름"]
+    }
+  },
+
+  "notes": {
+    "parsingLibrary": "cheerio",
+    "sessionManagement": "request-promise-native cookie jar",
+    "specialCases": [
+      "미드타운: 차량 상세 페이지 구조 다름, 대체 파싱 로직 존재",
+      "paratower: env.target === 'paratower' 일 때 차량번호 패턴 다르게 처리"
+    ]
+  }
+}

@@ -22,6 +22,35 @@ export const LoginApiSpecSchema = z.object({
   responseFields: z.array(z.string()), // ['token', 'refreshToken', 'user']
 });
 
+// 벤더별 힌트 (특이한 구조 처리용)
+export const VendorHintsSchema = z.object({
+  login: z.object({
+    usernameSelector: z.string().optional(),
+    passwordSelector: z.string().optional(),
+    submitSelector: z.string().optional(),
+    failureTexts: z.array(z.string()).optional(),
+  }).optional(),
+
+  search: z.object({
+    description: z.string().optional(),
+    inputMethod: z.enum(['text', 'keypad']).optional(),
+    inputSelector: z.string().optional(),
+    keypadButtons: z.array(z.string()).optional(),
+    searchButtonText: z.string().optional(),
+    vehicleNumberSlice: z.tuple([z.number(), z.number().nullable()]).optional(),
+    resultRowSelector: z.string().optional(),
+    fallbackSelectors: z.array(z.string()).optional(),
+  }).optional(),
+
+  quirks: z.object({
+    dismissAlerts: z.boolean().optional(),
+    preSubmitDelay: z.number().optional(),
+    specialCases: z.array(z.string()).optional(),
+  }).optional(),
+});
+
+export type VendorHints = z.infer<typeof VendorHintsSchema>;
+
 // 전체 로그인 Spec
 export const LoginSpecSchema = z.object({
   systemCode: z.string(),
@@ -43,6 +72,9 @@ export const LoginSpecSchema = z.object({
     elementSelector: z.string().optional(),  // 로그인 후 나타나는 요소
     cookieName: z.string().optional(),       // 설정되는 쿠키 이름
   }),
+
+  // 벤더 힌트 (선택)
+  hints: VendorHintsSchema.optional(),
 
   // 메타데이터
   version: z.number().default(1),

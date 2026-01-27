@@ -7,6 +7,7 @@ export const LoginResultSchema = z.object({
     'FORM_CHANGED',         // 로그인 폼 구조 변경
     'API_CHANGED',          // 로그인 API 변경
     'CONNECTION_ERROR',     // 접속 실패
+    'NEEDS_HUMAN_HELP',     // 자동 분석 실패 - 수동 검토 필요
     'UNKNOWN_ERROR',        // 알 수 없는 에러
   ]),
   confidence: z.number().min(0).max(1),

@@ -9,7 +9,7 @@ import { writeFileSync } from 'fs';
 import { createAgent, modelCallLimitMiddleware } from 'langchain';
 import { CredentialManager } from '../security/index.js';
 import { SpecStore, SpecChanges } from '../specs/index.js';
-import { LoginSpec, LoginResult } from '../schemas/index.js';
+import { LoginSpec, LoginResult, VendorHints } from '../schemas/index.js';
 
 // Connection error classification
 export interface ConnectionErrorInfo {
@@ -97,6 +97,7 @@ interface LoginAgentConfig {
   specStore: SpecStore;
   llm: BaseChatModel;
   maxIterations?: number;
+  mcpClient?: Client;  // 외부 주입 시 브라우저 세션 공유
 }
 
 interface SessionInfo {
@@ -119,12 +120,17 @@ interface ParsedAnalysis {
 }
 
 export class LoginAgent {
-  private config: Required<LoginAgentConfig>;
+  private config: LoginAgentConfig & { maxIterations: number };
   private mcpClient: Client | null = null;
+  private externalMcp: boolean = false;  // 외부 주입 여부
   private networkLogs: { url: string; method: string; status?: number; body?: string }[] = [];
 
   constructor(config: LoginAgentConfig) {
     this.config = { maxIterations: 15, ...config };
+    if (config.mcpClient) {
+      this.mcpClient = config.mcpClient;
+      this.externalMcp = true;
+    }
   }
 
   async run(): Promise<{ result: LoginResult; spec: LoginSpec }> {
@@ -139,15 +145,19 @@ export class LoginAgent {
     };
 
     try {
-      // Start MCP server
-      const transport = new StdioClientTransport({
-        command: 'npx',
-        args: ['@playwright/mcp@latest', '--headless'],
-      });
+      // Start MCP server (skip if external MCP provided)
+      if (!this.externalMcp) {
+        const transport = new StdioClientTransport({
+          command: 'npx',
+          args: ['@playwright/mcp@latest', '--headless', '--isolated'],
+        });
 
-      this.mcpClient = new Client({ name: 'login-agent', version: '1.0.0' });
-      await this.mcpClient.connect(transport);
-      console.log('  [LoginAgent] MCP connected');
+        this.mcpClient = new Client({ name: 'login-agent', version: '1.0.0' });
+        await this.mcpClient.connect(transport);
+        console.log('  [LoginAgent] MCP connected');
+      } else {
+        console.log('  [LoginAgent] Using shared MCP client');
+      }
 
       // Build tools
       const tools = await this.buildTools();
@@ -171,12 +181,23 @@ export class LoginAgent {
 
       // Run agent with recursion limit
       const agentResult = await agent.invoke(
-        { messages: [new HumanMessage('Start: Navigate to the login page.')] },
+        { messages: [new HumanMessage('Execute the complete login flow: navigate to the URL, fill username and password using secure_fill_credential, click submit, and report the result. Do NOT stop until login is attempted.')] },
         { recursionLimit: this.config.maxIterations * 3 }
       );
 
       // Extract final response from last AI message
       const messages = agentResult.messages as BaseMessage[];
+
+      // Debug: print all messages to understand agent behavior
+      console.log('\n  [Agent Messages Debug]');
+      for (let i = 0; i < messages.length; i++) {
+        const msg = messages[i];
+        const type = msg.constructor.name;
+        const content = typeof msg.content === 'string' ? msg.content.slice(0, 300) : JSON.stringify(msg.content).slice(0, 300);
+        console.log(`    [${i}] ${type}: ${content}...`);
+      }
+      console.log('  [End Debug]\n');
+
       let finalResponse = '';
       for (let i = messages.length - 1; i >= 0; i--) {
         const msg = messages[i];
@@ -221,6 +242,45 @@ export class LoginAgent {
             spec: capturedSpec as LoginSpec,
           };
         }
+      }
+
+      // Human-in-the-loop fallback: Low confidence + unknown error
+      if ((analysis.confidence || 0) < 0.5 && analysis.status === 'UNKNOWN_ERROR') {
+        console.log('  [LoginAgent] Low confidence - requesting human help');
+
+        // Take screenshot for human review
+        let screenshotPath: string | undefined;
+        try {
+          const screenshotResult = await this.mcpClient!.callTool({
+            name: 'browser_take_screenshot',
+            arguments: {},
+          });
+          const contents = screenshotResult.content as any[];
+          for (const c of contents) {
+            if (c.type === 'image' && c.data) {
+              screenshotPath = `human-help-${Date.now()}.png`;
+              writeFileSync(screenshotPath, Buffer.from(c.data, 'base64'));
+              console.log(`      [screenshot saved] ${screenshotPath}`);
+            }
+          }
+        } catch {
+          // Screenshot failed, continue without it
+        }
+
+        return {
+          result: {
+            status: 'NEEDS_HUMAN_HELP',
+            confidence: analysis.confidence || 0,
+            details: {
+              urlBefore,
+              urlAfter,
+              urlChanged: urlBefore !== urlAfter,
+              errorMessage: `자동 분석 실패 - 수동 검토 필요${screenshotPath ? ` (스크린샷: ${screenshotPath})` : ''}`,
+            },
+            timestamp,
+          },
+          spec: capturedSpec as LoginSpec,
+        };
       }
 
       // Build final spec
@@ -283,8 +343,13 @@ export class LoginAgent {
         spec: capturedSpec as LoginSpec,
       };
     } finally {
-      if (this.mcpClient) await this.mcpClient.close().catch(() => {});
-      console.log('  [LoginAgent] MCP closed');
+      // Only close MCP if we created it (not external)
+      if (this.mcpClient && !this.externalMcp) {
+        await this.mcpClient.close().catch(() => {});
+        console.log('  [LoginAgent] MCP closed');
+      } else if (this.externalMcp) {
+        console.log('  [LoginAgent] Keeping shared MCP open');
+      }
     }
   }
 
@@ -296,7 +361,7 @@ export class LoginAgent {
     mcpTools.forEach(t => console.log(`    - ${t.name}`));
 
     // Filter MCP tools - exclude browser_type (we use secure_fill instead)
-    const allowedTools = ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_wait_for', 'browser_press_key', 'browser_take_screenshot', 'browser_network_requests', 'browser_evaluate'];
+    const allowedTools = ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_wait_for', 'browser_press_key', 'browser_take_screenshot', 'browser_network_requests', 'browser_evaluate', 'browser_handle_dialog'];
     const filtered = mcpTools.filter(t => {
       const schema = t.inputSchema as any;
       const hasParams = schema?.properties && Object.keys(schema.properties).length > 0;
@@ -322,6 +387,28 @@ export class LoginAgent {
 
         try {
           console.log(`      [secure_fill] field=${field}, element=${element}, valueLen=${value.length}`);
+
+          // Step 0: Dismiss any existing alert dialog first
+          try {
+            await this.mcpClient!.callTool({
+              name: 'browser_handle_dialog',
+              arguments: { accept: true },
+            });
+            console.log(`      [secure_fill] dismissed existing dialog`);
+          } catch {
+            // No dialog to dismiss, continue
+          }
+
+          // Step 1: Click to focus the element first
+          await this.mcpClient!.callTool({
+            name: 'browser_click',
+            arguments: { ref: element },
+          });
+
+          // Step 2: Small delay for focus
+          await new Promise(resolve => setTimeout(resolve, 100));
+
+          // Step 3: Type the value
           const mcpResult = await this.mcpClient!.callTool({
             name: 'browser_type',
             arguments: { ref: element, text: value, submit: false },
@@ -329,6 +416,20 @@ export class LoginAgent {
           const content = mcpResult.content as any[];
           const resultText = content?.map(c => c.text || '').join('\n') || '';
           console.log(`      [secure_fill result] ${resultText.slice(0, 200)}`);
+
+          // Check for alert dialogs and dismiss them
+          if (resultText.includes('alert') || resultText.includes('dialog')) {
+            console.log(`      [secure_fill] alert detected, attempting to handle...`);
+            try {
+              await this.mcpClient!.callTool({
+                name: 'browser_handle_dialog',
+                arguments: { accept: true },
+              });
+            } catch {
+              // Dialog handling tool might not exist, ignore
+            }
+          }
+
           if (resultText.toLowerCase().includes('error')) {
             return `Error filling ${field}: ${resultText}`;
           }
@@ -340,7 +441,7 @@ export class LoginAgent {
       },
       {
         name: 'secure_fill_credential',
-        description: 'Fill username or password field securely. Actual value is injected internally.',
+        description: 'Fill username or password field securely. Actual value is injected internally. IMPORTANT: Always fill username FIRST, then password.',
         schema: z.object({
           field: z.enum(['username', 'password']),
           element: z.string().describe('Element reference from snapshot'),
@@ -376,6 +477,7 @@ export class LoginAgent {
     return tool(
       async (params) => {
         try {
+          console.log(`      [MCP] ${mcpTool.name}(${JSON.stringify(params)})`);
           const toolResult = await this.mcpClient!.callTool({ name: mcpTool.name, arguments: params });
           const contents = toolResult.content as any[];
 
@@ -402,30 +504,61 @@ export class LoginAgent {
   }
 
   private buildSystemPrompt(): string {
+    // Load hints from spec if available
+    const spec = this.config.specStore.load(this.config.systemCode);
+    const hints: VendorHints | undefined = spec?.hints;
+
+    let hintSection = '';
+    if (hints?.login) {
+      hintSection = `
+**VENDOR HINTS (사용 우선):**
+${hints.login.usernameSelector ? `- 아이디 필드: ${hints.login.usernameSelector}` : ''}
+${hints.login.passwordSelector ? `- 비밀번호 필드: ${hints.login.passwordSelector}` : ''}
+${hints.login.submitSelector ? `- 로그인 버튼: ${hints.login.submitSelector}` : ''}
+${hints.login.failureTexts?.length ? `- 실패 텍스트: ${hints.login.failureTexts.join(', ')}` : ''}
+${hints.quirks?.dismissAlerts ? '- Alert 자동 dismiss 필요' : ''}
+
+힌트 셀렉터를 먼저 시도하고, 실패 시 일반적인 방법으로 폴백하세요.
+`;
+    }
+
     return `You are a login flow analyzer for: ${this.config.url}
 SystemCode: ${this.config.systemCode}
-
+${hintSection}
 **TASK:**
-1. Navigate to URL, take snapshot
-2. Find login form (username, password, submit button)
-3. Fill credentials using secure_fill_credential
-4. Click submit
-5. Wait 3 seconds, then take screenshot
-6. Use browser_network_requests to capture API calls made during login
-7. If login SUCCESS, extract session info:
+1. Navigate to URL
+2. If you see "alert dialog" in response, dismiss it with browser_handle_dialog(accept: true)
+3. Take snapshot, find login form fields (see FINDING LOGIN FIELDS below)
+4. Fill credentials in STRICT ORDER:
+   a. FIRST: secure_fill_credential(field: "username", element: "ref")
+   b. SECOND: secure_fill_credential(field: "password", element: "ref")
+   c. NEVER fill password before username - this causes validation errors!
+5. Click submit button
+6. Wait 3 seconds, then take screenshot
+7. Use browser_network_requests to capture API calls made during login
+8. If login SUCCESS, extract session info:
    - browser_evaluate: document.cookie
    - browser_evaluate: JSON.stringify(localStorage)
    - browser_evaluate: JSON.stringify(sessionStorage)
-8. Take snapshot and analyze result
+9. Take snapshot and analyze result
+
+**FINDING LOGIN FIELDS:**
+Login forms use various field names. Look for:
+- Username field: input with name/id containing "user", "id", "login", "email", "account", "j_username", or type="text" near password field
+- Password field: input with type="password" OR name/id containing "pass", "pw", "pwd", "j_password"
+- Submit button: button or input with type="submit", or text like "로그인", "Login", "Sign in"
 
 **TOOLS:**
 - browser_navigate, browser_snapshot, browser_click, browser_wait_for
 - browser_take_screenshot (use after login to capture result)
 - browser_network_requests (use after login to capture API calls)
 - browser_evaluate (use to extract cookies, localStorage, sessionStorage)
+- browser_handle_dialog (use to dismiss alert/confirm dialogs)
 - secure_fill_credential(field: "username"|"password", element: "ref from snapshot")
 
 **IMPORTANT:**
+- Fill username FIRST, then password - NEVER reverse this order!
+- If you see "alert dialog" in response, use browser_handle_dialog(accept: true) to dismiss it
 - Use secure_fill_credential for ALL credential inputs
 - NEVER type passwords directly
 - After login, ALWAYS call browser_network_requests to capture API endpoints

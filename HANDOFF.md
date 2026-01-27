@@ -204,30 +204,33 @@ LANGSMITH_TRACING=true
 
 ---
 
-## 현재 구현 상태 (2026-01-24)
+## 현재 구현 상태 (2026-01-26)
 
-### Phase 1 MVP 완료 ✅ + CLI with LLM 🚧
+### Phase 1 MVP 완료 ✅ + MCP 에이전트 🚧
 
 **방향 전환**: HTTP 서버보다 에이전트 품질 검증 우선
 - CLI로 개별 에이전트 테스트 가능하도록 구성
 - mock-input.json으로 수동 입력 제공
-- LLM 연동 완료 (Claude Sonnet)
+- LLM 연동 완료 (Internal AI Router / Gemini / OpenAI / Anthropic)
 
 ### 에이전트 개발 우선순위
-1. ✅ **LLM 연동** - 각 에이전트가 Claude로 분석
-2. 🔜 **로그인 플로우** - id/pwd로 실제 로그인 후 분석
-3. 📋 **Spec 비교** - 비용 절감용 캐시 (나중에)
+1. ✅ **LLM 연동** - 각 에이전트가 LLM으로 분석
+2. ✅ **MCP 기반 자율 에이전트** - LLM이 Playwright 도구 직접 호출
+3. 🔜 **Secure Login Agent** - 비밀번호 노출 없이 MCP로 로그인
+4. 📋 **Spec 비교** - 비용 절감용 캐시 (나중에)
 
 ### CLI 사용법
 
 ```bash
-# 환경 변수 설정 필수
-echo "ANTHROPIC_API_KEY=your-key" > .env
+# 환경 변수 설정 필수 (하나 이상)
+echo "INTERNAL_AI_URL=... INTERNAL_AI_KEY=..." > .env
+# 또는 GOOGLE_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY
 
 # 개별 에이전트 실행
-pnpm agent:dom        # DOM 에이전트만
-pnpm agent:network    # Network 에이전트만
-pnpm agent:policy     # Policy 에이전트만
+pnpm agent:dom        # DOM 에이전트 (로그인 플로우 포함)
+pnpm agent:network    # Network 에이전트
+pnpm agent:policy     # Policy 에이전트
+pnpm agent:dom-mcp    # 🆕 MCP 기반 자율 에이전트 (LLM이 도구 직접 호출)
 
 # 전체 병렬 실행
 pnpm agent:all
@@ -296,31 +299,47 @@ src/
 mock-input.json                   # 🆕 수동 입력 데이터
 ```
 
-### 다음 작업: 로그인 플로우
+### 다음 작업: Login Agent (새 설계)
 
-**목표**: id/pwd로 실제 로그인 후 인증된 페이지 분석
+**목표**: MCP 기반 로그인 에이전트 - 로그인 수행 + 프로세스 분석 + Spec 생성/비교 + 변경 감지
+
+**상세 계획**: `docs/plans/2026-01-26-login-agent.md`
 
 ```
-현재: url 접속 → 퍼블릭 페이지만 분석
-목표: url 접속 → 로그인 → 대시보드/할인 페이지 분석
+현재: dom-mcp 에이전트가 pwd를 프롬프트에 직접 포함 (보안 문제)
+목표: secure_fill_credential 도구로 LLM 없이 pwd 주입
 ```
 
-**구현 계획**:
-1. 로그인 폼 자동 감지 (DOM Agent 결과 활용)
-2. id/pwd로 로그인 수행 (Playwright)
-3. 로그인 성공 확인 후 타겟 페이지 분석
-4. 세션 유지하며 DOM/Network 캡처
+**아키텍처**:
+```
+LLM ──▶ secure_fill_credential(field: "password", element: "...")
+                    │
+                    ▼
+         CredentialManager.getFieldValue(systemCode, "password")
+                    │
+                    ▼
+         browser_type(element, text: "actual_password")
+```
 
-### 테스트 대기 중
+**구현 태스크**:
+1. CredentialManager 클래스 - systemCode별 credential 저장/조회
+2. secure_fill_credential 도구 - LLM은 field만 지정, 실제 값은 내부 주입
+3. LoginResult 스키마 - SUCCESS/INVALID_CREDENTIALS/FORM_CHANGED/API_CHANGED
+4. SecureLoginAgent 클래스 - MCP + CredentialManager 통합
+5. CLI 연결 - `pnpm agent:secure-login`
 
-사용자가 `pnpm agent:all` 실행 후 결과 확인 예정.
-결과에 따라 로그인 플로우 구현 진행.
+**분석 목표**:
+- 로그인 성공/실패 판정
+- id/pwd 틀림 vs 폼 구조 변경 구분
+- API 엔드포인트 변경 감지
 
 ---
 
 ## 참고 문서
 
 - [상세 설계서](./docs/plans/2026-01-20-web-analysis-agent-design.md)
+- [Phase 1 MVP 구현](./docs/plans/2026-01-24-phase1-mvp-implementation.md)
+- [Secure Login Agent 설계](./docs/plans/2026-01-26-secure-login-agent.md)
 
 ---
 

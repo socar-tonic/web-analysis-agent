@@ -17,8 +17,7 @@
     "agent:both": "tsx src/cli.ts both",
     "agent:all": "tsx src/cli.ts all",
     "agent:dom-mcp": "tsx src/cli.ts dom-mcp",
-    "agent:search": "tsx src/cli.ts search",
-    "agent:login-search": "tsx src/cli.ts login-search"
+    "agent:search": "tsx src/cli.ts search"
   },
   "type": "module",
   "keywords": [],

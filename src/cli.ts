@@ -118,8 +118,7 @@ function createLLM(): BaseChatModel {
     return new ChatOpenAI({
       model,
       apiKey: process.env.INTERNAL_AI_KEY,
-      temperature: 0,
-      maxTokens: 16384,
+      maxTokens: -1,
       configuration: {
         baseURL: process.env.INTERNAL_AI_URL,
       },
@@ -1435,30 +1434,91 @@ async function runSearchAgentCommand(
   };
 }
 
-// Combined Login -> Search flow
+// Combined Login -> Search flow with shared MCP client
 async function runLoginAndSearchCommand(input: MockInput, llm: BaseChatModel): Promise<AgentResult[]> {
-  console.log(`\n[Login -> Search Flow] Starting...`);
+  console.log(`\n[Login -> Search Flow] Starting with shared browser session...`);
 
-  // Step 1: Login
-  const loginResult = await runLoginAgentCommand(input, llm);
+  // Create shared MCP client
+  const transport = new StdioClientTransport({
+    command: 'npx',
+    args: ['@playwright/mcp@latest', '--headless', '--isolated'],
+  });
 
-  if (!loginResult.success || loginResult.data?.result?.status !== 'SUCCESS') {
-    console.log('\n  [Flow] Login failed, skipping search');
-    return [loginResult];
+  const sharedMcp = new Client({ name: 'shared-session', version: '1.0.0' });
+
+  try {
+    await sharedMcp.connect(transport);
+    console.log('  [Shared MCP] Connected');
+
+    const credManager = new CredentialManager();
+    credManager.set(input.systemCode, { username: input.id, password: input.pwd });
+    const specStore = new SpecStore();
+
+    // Step 1: Login (using shared MCP)
+    console.log('\n  [Step 1] Running LoginAgent...');
+    const loginAgent = new LoginAgent({
+      systemCode: input.systemCode,
+      url: input.url,
+      credentialManager: credManager,
+      specStore,
+      llm,
+      mcpClient: sharedMcp,  // 공유 MCP 주입
+      maxIterations: 20,  // 여유 있게 설정
+    });
+
+    const { result: loginResult, spec: loginSpec } = await loginAgent.run();
+
+    console.log(`\n  [Login Result] ${loginResult.status} (confidence: ${loginResult.confidence})`);
+
+    // Check login success
+    if (loginResult.status !== 'SUCCESS') {
+      console.log('  [Flow] Login failed, skipping search');
+      return [{
+        agent: 'login',
+        success: false,
+        analysis: JSON.stringify({ result: loginResult, spec: loginSpec }, null, 2),
+        data: { result: loginResult, spec: loginSpec },
+      }];
+    }
+
+    console.log('  [Flow] Login successful, browser session maintained');
+
+    // Step 2: Search (using same shared MCP - browser already logged in)
+    console.log('\n  [Step 2] Running SearchAgent (same browser session)...');
+    const searchAgent = new SearchAgent({
+      systemCode: input.systemCode,
+      url: input.url,
+      carNum: input.carNum,
+      session: loginResult.session || {},  // 세션 정보도 전달 (참고용)
+      specStore,
+      llm,
+      mcpClient: sharedMcp,  // 동일한 MCP 주입 (이미 로그인됨)
+      maxIterations: 20,  // 여유 있게 설정
+    });
+
+    const { result: searchResult, spec: searchSpec } = await searchAgent.run();
+
+    console.log(`\n  [Search Result] ${searchResult.status} (confidence: ${searchResult.confidence})`);
+
+    return [
+      {
+        agent: 'login',
+        success: !loginResult.changes?.codeWillBreak,
+        analysis: JSON.stringify({ result: loginResult, spec: loginSpec }, null, 2),
+        data: { result: loginResult, spec: loginSpec },
+      },
+      {
+        agent: 'search',
+        success: !searchResult.changes?.codeWillBreak,
+        analysis: JSON.stringify({ result: searchResult, spec: searchSpec }, null, 2),
+        data: { result: searchResult, spec: searchSpec },
+      },
+    ];
+  } finally {
+    // Close shared MCP
+    await sharedMcp.close().catch(() => {});
+    console.log('\n  [Shared MCP] Closed');
   }
-
-  const session = loginResult.data.result.session;
-  if (!session) {
-    console.log('\n  [Flow] No session captured, skipping search');
-    return [loginResult];
-  }
-
-  console.log('\n  [Flow] Login successful, proceeding to search...');
-
-  // Step 2: Search with captured session
-  const searchResult = await runSearchAgentCommand(input, session, llm);
-
-  return [loginResult, searchResult];
 }
 
 // Run agents in parallel
@@ -1767,9 +1827,7 @@ async function main() {
   } else if (agentArg === 'dom-mcp') {
     results.push(await runDomMcpAgent(input, llm));
   } else if (agentArg === 'search') {
-    // Search requires prior login - run combined flow
-    results = await runLoginAndSearchCommand(input, llm);
-  } else if (agentArg === 'login-search') {
+    // Search requires prior login - run combined flow (login -> search)
     results = await runLoginAndSearchCommand(input, llm);
   }
 

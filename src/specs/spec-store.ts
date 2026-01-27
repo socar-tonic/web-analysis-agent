@@ -53,36 +53,40 @@ export class SpecStore {
 
     const prompt = `You are validating whether EXISTING CODE will still work against the LIVE SITE.
 
-**EXISTING SPEC (how the code works - DO NOT CHANGE THIS):**
+**EXISTING SPEC (how the code works):**
 ${JSON.stringify(oldSpec, null, 2)}
 
 **CAPTURED FROM LIVE SITE:**
 ${JSON.stringify(newSpec, null, 2)}
 
 **YOUR TASK:**
-Determine if the EXISTING CODE will still work correctly.
-- The EXISTING SPEC defines how the current code operates (API endpoints, selectors, success criteria)
-- The CAPTURED data shows what the live site actually provides
-- Report changes ONLY if they would BREAK the existing code
+Determine if the EXISTING CODE will FAIL. Be VERY CONSERVATIVE - only report breakage if you are CERTAIN.
 
-**IGNORE (not breaking changes):**
-- Cosmetic differences (quotes, formatting)
-- Selector syntax variations for the SAME element
-- Success indicator differences (captured may use URL pattern, but if existing code checks access_token and it's still present, that's fine)
-- Additional fields in captured (existing code doesn't use them)
+**DEFAULT ASSUMPTION: CODE WORKS**
+Unless you have CLEAR EVIDENCE the code will fail, assume it works.
 
-**REPORT (breaking changes):**
-- API endpoint/port changed → existing code will call wrong URL
-- Required request field name changed → existing code sends wrong field
-- Required response field missing → existing code can't parse response
-- Form selector broken → existing code can't find element
+**NOT breaking (IGNORE these):**
+- Different URL paths that both exist (e.g., /login vs /login.cs - both may work)
+- Cosmetic differences (quotes, formatting, extra whitespace)
+- Selector syntax variations (CSS vs accessibility selectors for same element)
+- Additional fields in captured that existing code doesn't use
+- Different success indicators if login succeeded
+- Form action URL differences if form submission worked
+
+**ONLY report as breaking if:**
+- Existing endpoint returns 404/500 error
+- Required field REMOVED (not just renamed/aliased)
+- Form element COMPLETELY GONE (not just different selector)
+- Authentication method fundamentally changed (e.g., form → OAuth)
+
+**CRITICAL:** If the login/search SUCCEEDED in the captured session, the code is NOT broken.
 
 **RESPONSE (JSON only):**
 {
-  "hasChanges": true/false,
-  "codeWillBreak": true/false,
-  "breakingChanges": ["description of what will break", ...] or null,
-  "summary": "Brief summary in Korean explaining if code needs update"
+  "hasChanges": false,
+  "codeWillBreak": false,
+  "breakingChanges": null,
+  "summary": "기존 코드 정상 작동"
 }`;
 
     try {

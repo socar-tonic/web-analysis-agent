@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { writeFileSync } from 'fs';
 import { createAgent, modelCallLimitMiddleware } from 'langchain';
 import { SpecStore, SpecChanges } from '../specs/index.js';
-import { SearchSpec, SearchResult } from '../schemas/index.js';
+import { SearchSpec, SearchResult, VendorHints } from '../schemas/index.js';
 
 interface SessionInfo {
   type?: 'jwt' | 'cookie' | 'session' | 'mixed';
@@ -25,6 +25,7 @@ export interface SearchAgentConfig {
   specStore: SpecStore;
   llm: BaseChatModel;
   maxIterations?: number;
+  mcpClient?: Client;  // 외부 주입 시 브라우저 세션 공유
 }
 
 interface ParsedAnalysis {
@@ -40,11 +41,16 @@ interface ParsedAnalysis {
 }
 
 export class SearchAgent {
-  private config: Required<SearchAgentConfig>;
+  private config: SearchAgentConfig & { maxIterations: number };
   private mcpClient: Client | null = null;
+  private externalMcp: boolean = false;  // 외부 주입 여부
 
   constructor(config: SearchAgentConfig) {
     this.config = { maxIterations: 15, ...config };
+    if (config.mcpClient) {
+      this.mcpClient = config.mcpClient;
+      this.externalMcp = true;
+    }
   }
 
   async run(): Promise<{ result: SearchResult; spec: SearchSpec }> {
@@ -57,15 +63,19 @@ export class SearchAgent {
     };
 
     try {
-      // Start MCP server
-      const transport = new StdioClientTransport({
-        command: 'npx',
-        args: ['@playwright/mcp@latest', '--headless'],
-      });
+      // Start MCP server (skip if external MCP provided)
+      if (!this.externalMcp) {
+        const transport = new StdioClientTransport({
+          command: 'npx',
+          args: ['@playwright/mcp@latest', '--headless', '--isolated'],
+        });
 
-      this.mcpClient = new Client({ name: 'search-agent', version: '1.0.0' });
-      await this.mcpClient.connect(transport);
-      console.log('  [SearchAgent] MCP connected');
+        this.mcpClient = new Client({ name: 'search-agent', version: '1.0.0' });
+        await this.mcpClient.connect(transport);
+        console.log('  [SearchAgent] MCP connected');
+      } else {
+        console.log('  [SearchAgent] Using shared MCP client (browser already logged in)');
+      }
 
       // Build tools
       const tools = await this.buildTools();
@@ -87,9 +97,14 @@ export class SearchAgent {
 
       console.log('\n  [LangChain Agent] Starting search...');
 
+      // 공유 MCP인 경우 다른 초기 메시지 사용
+      const initialMessage = this.externalMcp
+        ? 'Browser is already logged in. Start by taking a snapshot to see the current page, then use keypad_input_vehicle to enter the vehicle number, click the search button, and report results.'
+        : 'Start: Navigate to the URL and search for the vehicle.';
+
       // Run agent
       const agentResult = await agent.invoke(
-        { messages: [new HumanMessage('Start: Navigate and search for the vehicle.')] },
+        { messages: [new HumanMessage(initialMessage)] },
         { recursionLimit: this.config.maxIterations * 3 }
       );
 
@@ -157,8 +172,13 @@ export class SearchAgent {
         spec: capturedSpec as SearchSpec,
       };
     } finally {
-      if (this.mcpClient) await this.mcpClient.close().catch(() => {});
-      console.log('  [SearchAgent] MCP closed');
+      // Only close MCP if we created it (not external)
+      if (this.mcpClient && !this.externalMcp) {
+        await this.mcpClient.close().catch(() => {});
+        console.log('  [SearchAgent] MCP closed');
+      } else if (this.externalMcp) {
+        console.log('  [SearchAgent] Keeping shared MCP open');
+      }
     }
   }
 
@@ -189,6 +209,7 @@ export class SearchAgent {
 
     // Add secure tools
     langchainTools.push(this.createSecureSearchTool());
+    langchainTools.push(this.createKeypadInputTool());
     langchainTools.push(this.createInjectSessionTool());
 
     return langchainTools;
@@ -196,10 +217,14 @@ export class SearchAgent {
 
   private createSecureSearchTool() {
     return tool(
-      async ({ element }) => {
-        const carNum = this.config.carNum;
+      async ({ element, useLastDigits }) => {
+        let carNum = this.config.carNum;
+        // 힌트에서 뒤 4자리만 사용하도록 지정된 경우
+        if (useLastDigits) {
+          carNum = carNum.replace(/[^0-9]/g, '').slice(-4);
+        }
         try {
-          console.log(`      [secure_search] element=${element}, carNumLen=${carNum.length}`);
+          console.log(`      [secure_search] element=${element}, carNum=${carNum}, useLastDigits=${useLastDigits}`);
           const mcpResult = await this.mcpClient!.callTool({
             name: 'browser_type',
             arguments: { ref: element, text: carNum, submit: false },
@@ -210,7 +235,7 @@ export class SearchAgent {
           if (resultText.toLowerCase().includes('error')) {
             return `Error filling search field: ${resultText}`;
           }
-          return `Filled vehicle number successfully`;
+          return `Filled vehicle number (${carNum}) successfully`;
         } catch (e) {
           console.log(`      [secure_search error] ${(e as Error).message}`);
           return `Error: ${(e as Error).message}`;
@@ -218,10 +243,162 @@ export class SearchAgent {
       },
       {
         name: 'secure_search_vehicle',
-        description: 'Fill vehicle number search field securely. Actual carNum is injected internally.',
+        description: 'Fill vehicle number search field securely. Set useLastDigits=true for keypad systems that only accept last 4 digits.',
         schema: z.object({
           element: z.string().describe('Element reference from snapshot for search input'),
+          useLastDigits: z.boolean().optional().describe('If true, only use last 4 digits of vehicle number'),
         }),
+      }
+    );
+  }
+
+  // 키패드 입력용 도구 - 버튼을 하나씩 클릭 후 검색 버튼도 자동 클릭
+  private createKeypadInputTool() {
+    // 힌트에서 검색 버튼 텍스트 가져오기
+    const spec = this.config.specStore.load(this.config.systemCode);
+    const searchButtonText = spec?.hints?.search?.searchButtonText || '조회';
+
+    return tool(
+      async ({}) => {
+        // 차량번호 뒤 4자리 숫자만 추출
+        const digits = this.config.carNum.replace(/[^0-9]/g, '').slice(-4);
+        console.log(`      [keypad_input] Entering digits: ${digits}`);
+
+        const results: string[] = [];
+
+        try {
+          // 각 숫자에 대해 버튼 클릭 (browser_evaluate로 직접 클릭)
+          for (const digit of digits) {
+            console.log(`      [keypad_input] Clicking digit: ${digit}`);
+
+            // JavaScript로 버튼 찾아서 클릭
+            const clickResult = await this.mcpClient!.callTool({
+              name: 'browser_evaluate',
+              arguments: {
+                function: `
+                  (function() {
+                    const digit = '${digit}';
+                    // 모든 클릭 가능 요소에서 숫자만 있는 것 찾기
+                    const clickables = document.querySelectorAll('button, input[type="button"], a, td, span, div');
+                    for (const el of clickables) {
+                      const text = (el.textContent || el.value || '').trim();
+                      // 정확히 숫자 하나만 있는 요소
+                      if (text === digit) {
+                        el.click();
+                        return 'clicked: ' + digit;
+                      }
+                    }
+                    // onclick 속성이 있는 모든 요소
+                    const onclickElements = document.querySelectorAll('[onclick]');
+                    for (const el of onclickElements) {
+                      const text = (el.textContent || '').trim();
+                      if (text === digit) {
+                        el.click();
+                        return 'clicked onclick: ' + digit;
+                      }
+                    }
+                    // img alt나 title로 찾기
+                    const images = document.querySelectorAll('img, input[type="image"]');
+                    for (const img of images) {
+                      const alt = img.alt || img.title || '';
+                      if (alt.includes(digit)) {
+                        img.click();
+                        return 'clicked img: ' + digit;
+                      }
+                    }
+                    // href에 숫자가 포함된 링크 (예: javascript:fn('8'))
+                    const links = document.querySelectorAll('a[href*="' + digit + '"]');
+                    for (const link of links) {
+                      const text = (link.textContent || '').trim();
+                      if (text === digit || text === '') {
+                        link.click();
+                        return 'clicked link: ' + digit;
+                      }
+                    }
+                    return 'not found: ' + digit + ' (searched ' + clickables.length + ' elements)';
+                  })()
+                `,
+              },
+            });
+
+            const clickContent = (clickResult.content as any[])?.map(c => c.text || '').join('\n') || '';
+            console.log(`      [keypad_input] Result: ${clickContent.slice(0, 100)}`);
+            results.push(clickContent);
+
+            // 각 클릭 사이에 짧은 대기
+            await new Promise(resolve => setTimeout(resolve, 200));
+          }
+
+          const allClicked = results.every(r => r.includes('clicked'));
+
+          // 숫자 입력 후 검색 버튼 자동 클릭
+          console.log(`      [keypad_input] Clicking search button: ${searchButtonText}`);
+          await new Promise(resolve => setTimeout(resolve, 300));
+
+          const searchClickResult = await this.mcpClient!.callTool({
+            name: 'browser_evaluate',
+            arguments: {
+              function: `
+                (function() {
+                  const searchText = '${searchButtonText}';
+                  // 버튼이나 링크에서 검색 텍스트 찾기
+                  const clickables = document.querySelectorAll('button, input[type="button"], input[type="submit"], a, div, span');
+                  for (const el of clickables) {
+                    const text = (el.textContent || el.value || '').trim();
+                    if (text === searchText || text.includes(searchText)) {
+                      el.click();
+                      return 'clicked search: ' + text;
+                    }
+                  }
+                  // onclick이 있는 요소에서 찾기
+                  const onclickElements = document.querySelectorAll('[onclick]');
+                  for (const el of onclickElements) {
+                    const text = (el.textContent || '').trim();
+                    if (text === searchText || text.includes(searchText)) {
+                      el.click();
+                      return 'clicked onclick search: ' + text;
+                    }
+                  }
+                  // img에서 검색 버튼 찾기 (alt나 src에 search, 조회 등 포함)
+                  const images = document.querySelectorAll('img, input[type="image"]');
+                  for (const img of images) {
+                    const alt = (img.alt || img.title || img.src || '').toLowerCase();
+                    if (alt.includes('search') || alt.includes('조회') || alt.includes('find')) {
+                      img.click();
+                      return 'clicked search img: ' + alt;
+                    }
+                  }
+                  // form submit 시도
+                  const forms = document.querySelectorAll('form');
+                  if (forms.length === 1) {
+                    forms[0].submit();
+                    return 'submitted form';
+                  }
+                  return 'search button not found: ' + searchText;
+                })()
+              `,
+            },
+          });
+
+          const searchContent = (searchClickResult.content as any[])?.map(c => c.text || '').join('\n') || '';
+          console.log(`      [keypad_input] Search button result: ${searchContent}`);
+
+          if (allClicked && searchContent.includes('clicked')) {
+            return `Successfully entered ${digits.length} digits via keypad (${digits}) and clicked search button. Wait for results.`;
+          } else if (allClicked) {
+            return `Entered digits (${digits}) but search button not found: ${searchContent}. Results: ${results.join(', ')}`;
+          } else {
+            return `Partial success - entered digits: ${digits}. Results: ${results.join(', ')}. Search: ${searchContent}`;
+          }
+        } catch (e) {
+          console.log(`      [keypad_input error] ${(e as Error).message}`);
+          return `Error: ${(e as Error).message}`;
+        }
+      },
+      {
+        name: 'keypad_input_vehicle',
+        description: 'Enter vehicle number via numeric keypad by clicking digit buttons, then automatically click search button. Uses last 4 digits. Use this for sites with keypad input instead of text fields.',
+        schema: z.object({}),
       }
     );
   }
@@ -334,63 +511,78 @@ export class SearchAgent {
       ? `Session type: ${this.config.session.type}`
       : 'Session: provided';
 
+    // Load hints from spec if available
+    const spec = this.config.specStore.load(this.config.systemCode);
+    const hints: VendorHints | undefined = spec?.hints;
+
+    // 힌트는 간단한 참고사항으로만 전달
+    let hintSection = '';
+    if (hints?.search) {
+      const parts: string[] = [];
+      if (hints.search.description) parts.push(hints.search.description);
+      if (hints.search.inputMethod) parts.push(`입력방식: ${hints.search.inputMethod}`);
+      if (hints.search.searchButtonText) parts.push(`검색버튼: ${hints.search.searchButtonText}`);
+
+      if (parts.length > 0) {
+        hintSection = `\n**참고:** ${parts.join(' | ')}`;
+      }
+    }
+
+    // 공유 MCP (이미 로그인된 상태)인지 여부
+    const isSharedSession = this.externalMcp;
+
+    // 키패드 입력 방식 여부
+    const isKeypadInput = hints?.search?.inputMethod === 'keypad';
+
+    const taskSection = isSharedSession
+      ? `**TASK (Browser already logged in):**
+1. Take snapshot to see current page
+2. ${isKeypadInput
+  ? `Use keypad_input_vehicle (enters last 4 digits via keypad + clicks search)`
+  : `Use secure_search_vehicle to fill vehicle number, then click search button`}
+3. Wait for results
+4. Take screenshot
+5. Report: current URL, page content summary, any vehicle info found
+
+**NOTE:** Do NOT navigate away - browser is already logged in.`
+      : `**TASK:**
+1. Navigate to URL
+2. Call inject_session to restore auth
+3. Find and fill search form using secure_search_vehicle
+4. Submit search
+5. Capture results (screenshot + network)
+6. Report findings`;
+
+    const toolsSection = isSharedSession
+      ? `**TOOLS:**
+- browser_snapshot, browser_click, browser_wait_for, browser_take_screenshot
+- browser_network_requests, browser_evaluate
+- keypad_input_vehicle - for keypad input (clicks digit buttons + search)
+- secure_search_vehicle - for text input fields`
+      : `**TOOLS:**
+- browser_navigate, browser_snapshot, browser_click, browser_wait_for
+- browser_take_screenshot, browser_network_requests, browser_evaluate
+- inject_session - restore auth state after navigate
+- secure_search_vehicle - fill vehicle number securely`;
+
     return `You are a vehicle search analyzer for: ${this.config.url}
 SystemCode: ${this.config.systemCode}
 ${sessionDesc}
+${hintSection}
 
-**TASK:**
-1. Navigate to URL
-2. Call inject_session to restore authentication state
-3. Take snapshot to find search form or navigate to search page
-4. Find vehicle search input field
-5. Use secure_search_vehicle to fill the vehicle number
-6. Click search button or submit
-7. Wait for results, take screenshot
-8. Use browser_network_requests to capture API calls
-9. Analyze search results (found/not found/error)
-10. Take final snapshot
+${taskSection}
 
-**TOOLS:**
-- browser_navigate, browser_snapshot, browser_click, browser_wait_for
-- browser_take_screenshot (capture search results)
-- browser_network_requests (capture search API calls)
-- browser_evaluate (check page state)
-- inject_session (CALL FIRST after navigate - restores auth state)
-- secure_search_vehicle(element: "ref from snapshot") - fills vehicle number securely
-
-**IMPORTANT:**
-- Call inject_session IMMEDIATELY after first navigation
-- Use secure_search_vehicle for vehicle number input - NEVER type it directly
-- Capture network requests to identify search API endpoints
-- Determine if search is DOM-based or API-based
+${toolsSection}
 
 **FINAL RESPONSE (JSON):**
 {
   "status": "SUCCESS|NOT_FOUND|FORM_CHANGED|API_CHANGED|SESSION_EXPIRED|UNKNOWN_ERROR",
   "confidence": 0.0-1.0,
   "searchType": "dom|api|hybrid",
-  "form": {
-    "searchInputSelector": "selector for vehicle number input",
-    "searchButtonSelector": "selector for search button",
-    "resultTableSelector": "selector for results table",
-    "resultRowSelector": "selector for result rows"
-  },
-  "api": {
-    "endpoint": "captured search API endpoint",
-    "method": "GET|POST",
-    "params": ["param names"],
-    "responseFields": ["response field names"]
-  },
-  "resultIndicators": {
-    "successField": "field indicating success",
-    "noResultText": "text shown when no results"
-  },
   "vehicle": {
-    "id": "vehicle entry id",
+    "id": "vehicle entry id if found",
     "plateNumber": "plate number",
-    "inTime": "entry time",
-    "outTime": "exit time if any",
-    "lastOrderId": "order id if any"
+    "inTime": "entry time"
   },
   "resultCount": 0,
   "errorMessage": "if any error"
