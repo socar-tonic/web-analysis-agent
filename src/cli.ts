@@ -265,16 +265,9 @@ async function main() {
   console.log('='.repeat(60));
 
   // Check API key
-  const hasInternalAI = process.env.INTERNAL_AI_URL && process.env.INTERNAL_AI_KEY;
-  const hasAnyKey = hasInternalAI || process.env.GOOGLE_API_KEY || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY;
-
-  if (!hasAnyKey) {
-    console.error('\n[ERROR] No API key found');
-    console.error('   Create .env file with one of:');
-    console.error('   INTERNAL_AI_URL=... + INTERNAL_AI_KEY=...');
-    console.error('   GOOGLE_API_KEY=...');
-    console.error('   OPENAI_API_KEY=sk-...');
-    console.error('   ANTHROPIC_API_KEY=sk-ant-...');
+  if (!process.env.INTERNAL_AI_URL || !process.env.INTERNAL_AI_KEY) {
+    console.error('\n[ERROR] Internal AI not configured');
+    console.error('   Set INTERNAL_AI_URL and INTERNAL_AI_KEY in .env');
     process.exit(1);
   }
 
