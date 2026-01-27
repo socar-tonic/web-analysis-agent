@@ -1335,6 +1335,18 @@ async function runLoginAgentCommand(input: MockInput, llm: BaseChatModel): Promi
   console.log('\n  [Result]');
   console.log(`    로그인 시도: ${result.status} (confidence: ${result.confidence})`);
 
+  // CONNECTION_ERROR 처리 - 접속 실패 시 조기 반환
+  if (result.status === 'CONNECTION_ERROR') {
+    console.log(`    [ALERT] 접속 실패: ${result.details.errorMessage}`);
+    console.log(`      신뢰도: ${(result.confidence * 100).toFixed(0)}%`);
+    return {
+      agent: 'login',
+      success: false,
+      analysis: JSON.stringify({ result, spec }, null, 2),
+      data: { result, spec },
+    };
+  }
+
   // 핵심 지표: 기존 코드 호환성
   const codeCompatible = !result.changes?.codeWillBreak;
 
