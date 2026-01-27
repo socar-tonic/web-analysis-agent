@@ -448,10 +448,10 @@ export class LoginAgent {
       },
       {
         name: 'secure_fill_credential',
-        description: 'Fill username or password field securely. Actual value is injected internally. IMPORTANT: Always fill username FIRST, then password.',
+        description: 'Fill username or password field securely. Actual value is injected internally. IMPORTANT: (1) Use ref from browser_snapshot like "e12", NOT CSS selectors like "#username". (2) Always fill username FIRST, then password.',
         schema: z.object({
           field: z.enum(['username', 'password']),
-          element: z.string().describe('Element reference from snapshot'),
+          element: z.string().describe('Element ref from browser_snapshot (e.g., "e12", "e18"). NOT CSS selectors.'),
         }),
       }
     );
@@ -538,9 +538,9 @@ ${hintSection}
 3. Take snapshot, find login form fields (see FINDING LOGIN FIELDS below)
    - **If you can't find login fields from snapshot, take a screenshot (browser_take_screenshot) and visually analyze the page**
    - Look at the screenshot image to identify form fields that may not be clear in the DOM snapshot
-4. Fill credentials in STRICT ORDER:
-   a. FIRST: secure_fill_credential(field: "username", element: "ref")
-   b. SECOND: secure_fill_credential(field: "password", element: "ref")
+4. Fill credentials in STRICT ORDER (use refs like "e12" from snapshot, NOT CSS selectors):
+   a. FIRST: secure_fill_credential(field: "username", element: "e12")  <- use actual ref from snapshot
+   b. SECOND: secure_fill_credential(field: "password", element: "e18")  <- use actual ref from snapshot
    c. NEVER fill password before username - this causes validation errors!
 5. Click submit button
 6. Wait 3 seconds, then take screenshot to verify result
@@ -563,7 +563,7 @@ Login forms use various field names. Look for:
 - browser_network_requests (use after login to capture API calls)
 - browser_evaluate (use to extract cookies, localStorage, sessionStorage)
 - browser_handle_dialog (use to dismiss alert/confirm dialogs)
-- secure_fill_credential(field: "username"|"password", element: "ref from snapshot")
+- secure_fill_credential(field: "username"|"password", element: "ref like e12 from snapshot, NOT CSS selector")
 
 **IMPORTANT:**
 - Fill username FIRST, then password - NEVER reverse this order!

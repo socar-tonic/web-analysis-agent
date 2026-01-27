@@ -79,12 +79,6 @@
     }
   },
 
-  "form": {
-    "usernameSelector": "input[placeholder=\"아이디\"]",
-    "passwordSelector": "input[placeholder=\"비밀번호\"]",
-    "submitSelector": "button:has-text(\"로그인\")"
-  },
-
   "successIndicators": {
     "login": {
       "hasField": "access_token"
