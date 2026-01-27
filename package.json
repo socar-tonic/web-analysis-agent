@@ -11,6 +11,7 @@
     "test:run": "vitest run",
     "agent": "tsx src/cli.ts search",
     "agent:login": "tsx src/cli.ts login",
+    "agent:login-graph": "tsx src/cli.ts login-graph",
     "agent:search": "tsx src/cli.ts search"
   },
   "type": "module",

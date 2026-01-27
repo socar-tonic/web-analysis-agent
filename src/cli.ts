@@ -4,6 +4,7 @@ import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { LoginAgent, SearchAgent } from './agents/index.js';
+import { LoginGraph } from './agents/login-graph/index.js';
 import { CredentialManager } from './security/index.js';
 import { SpecStore } from './specs/index.js';
 import { createLLMForAgent } from './llm/index.js';
@@ -106,6 +107,56 @@ async function runLoginAgentCommand(input: MockInput, llm: BaseChatModel): Promi
 
   return {
     agent: 'login',
+    success: codeCompatible,
+    analysis: JSON.stringify({ result, spec }, null, 2),
+    data: { result, spec },
+  };
+}
+
+async function runLoginGraphCommand(input: MockInput, llm: BaseChatModel): Promise<AgentResult> {
+  console.log(`\n[Login Graph] Starting for: ${input.url}`);
+  console.log('  Using LangGraph-based workflow...');
+
+  const credManager = new CredentialManager();
+  credManager.set(input.systemCode, { username: input.id, password: input.pwd });
+
+  const specStore = new SpecStore();
+
+  const loginGraph = new LoginGraph({
+    systemCode: input.systemCode,
+    url: input.url,
+    credentialManager: credManager,
+    specStore,
+    llm,
+  });
+
+  const { result, spec } = await loginGraph.run();
+
+  console.log('\n  [Result]');
+  console.log(`    로그인 시도: ${result.status} (confidence: ${result.confidence})`);
+
+  // CONNECTION_ERROR 처리
+  if (result.status === 'CONNECTION_ERROR') {
+    console.log(`    [ALERT] 접속 실패: ${result.details.errorMessage}`);
+    return {
+      agent: 'login-graph',
+      success: false,
+      analysis: JSON.stringify({ result, spec }, null, 2),
+      data: { result, spec },
+    };
+  }
+
+  const codeCompatible = !result.changes?.codeWillBreak;
+
+  if (result.changes?.codeWillBreak) {
+    console.log(`    [ALERT] 코드 호환성: 실패 - 수정 필요`);
+    result.changes.breakingChanges?.forEach(c => console.log(`      - ${c}`));
+  } else {
+    console.log(`    [OK] 코드 호환성: 성공`);
+  }
+
+  return {
+    agent: 'login-graph',
     success: codeCompatible,
     analysis: JSON.stringify({ result, spec }, null, 2),
     data: { result, spec },
@@ -283,12 +334,16 @@ async function main() {
   if (agentArg === 'login') {
     const llm = createLLMForAgent('login');
     results.push(await runLoginAgentCommand(input, llm));
+  } else if (agentArg === 'login-graph') {
+    const llm = createLLMForAgent('login');
+    console.log(`  [LLM] login: ${process.env.AGENT_LOGIN_MODEL || 'dev/gemini-3-pro-preview'}`);
+    results.push(await runLoginGraphCommand(input, llm));
   } else if (agentArg === 'search') {
     // Search requires login first - run combined flow
     results = await runLoginAndSearchCommand(input);
   } else {
     console.error(`\n[ERROR] Unknown command: ${agentArg}`);
-    console.error('   Available commands: login, search');
+    console.error('   Available commands: login, login-graph, search');
     process.exit(1);
   }
 
