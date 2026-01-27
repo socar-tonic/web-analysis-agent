@@ -1,7 +1,7 @@
 {
   "systemCode": "vendor-abc",
   "url": "https://example.com",
-  "capturedAt": "2026-01-27T11:49:39.434Z",
+  "capturedAt": "2026-01-27T11:51:08.611Z",
   "loginType": "dom",
   "form": {
     "usernameSelector": "#username",
