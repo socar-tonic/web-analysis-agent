@@ -6,6 +6,7 @@ import {
   DiagnosisType,
 } from '../index.js';
 import { SearchResultSchema } from '../search-result.schema.js';
+import { SearchSpecSchema } from '../search-spec.schema.js';
 
 describe('FailureAlertSchema', () => {
   it('should parse valid failure alert', () => {
@@ -109,5 +110,48 @@ describe('SearchResultSchema', () => {
       timestamp: new Date().toISOString(),
     };
     expect(() => SearchResultSchema.parse(result)).not.toThrow();
+  });
+});
+
+describe('SearchSpecSchema', () => {
+  it('should validate API-based search spec', () => {
+    const spec = {
+      systemCode: 'humax-parcs-api',
+      url: 'https://console.humax-parcs.com',
+      capturedAt: new Date().toISOString(),
+      searchType: 'api',
+      api: {
+        endpoint: '/in.store/{siteId}',
+        method: 'GET',
+        params: ['searchType', 'plateNumber', 'fromAt', 'toAt'],
+        responseFields: ['id', 'plateNumber', 'inTime'],
+      },
+      resultIndicators: {
+        successField: 'resultCode',
+        successValue: 'SUCCESS',
+      },
+      version: 1,
+    };
+    expect(() => SearchSpecSchema.parse(spec)).not.toThrow();
+  });
+
+  it('should validate DOM-based search spec', () => {
+    const spec = {
+      systemCode: 'vendor-dom',
+      url: 'https://vendor.com',
+      capturedAt: new Date().toISOString(),
+      searchType: 'dom',
+      form: {
+        searchInputSelector: 'input[name="carNum"]',
+        searchButtonSelector: 'button.search-btn',
+        resultTableSelector: 'table.result-list',
+        resultRowSelector: 'tr.vehicle-row',
+      },
+      resultIndicators: {
+        noResultText: '검색 결과가 없습니다',
+      },
+      version: 1,
+    };
+    expect(() => SearchSpecSchema.parse(spec)).not.toThrow();
   });
 });
