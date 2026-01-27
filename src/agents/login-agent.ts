@@ -529,12 +529,14 @@ ${hintSection}
 1. Navigate to URL
 2. If you see "alert dialog" in response, dismiss it with browser_handle_dialog(accept: true)
 3. Take snapshot, find login form fields (see FINDING LOGIN FIELDS below)
+   - **If you can't find login fields from snapshot, take a screenshot (browser_take_screenshot) and visually analyze the page**
+   - Look at the screenshot image to identify form fields that may not be clear in the DOM snapshot
 4. Fill credentials in STRICT ORDER:
    a. FIRST: secure_fill_credential(field: "username", element: "ref")
    b. SECOND: secure_fill_credential(field: "password", element: "ref")
    c. NEVER fill password before username - this causes validation errors!
 5. Click submit button
-6. Wait 3 seconds, then take screenshot
+6. Wait 3 seconds, then take screenshot to verify result
 7. Use browser_network_requests to capture API calls made during login
 8. If login SUCCESS, extract session info:
    - browser_evaluate: document.cookie
@@ -564,6 +566,7 @@ Login forms use various field names. Look for:
 - After login, ALWAYS call browser_network_requests to capture API endpoints
 - After login SUCCESS, ALWAYS extract session info using browser_evaluate
 - After login, determine: SUCCESS / INVALID_CREDENTIALS / FORM_CHANGED
+- **WHEN STUCK: If snapshot is confusing, ALWAYS take a screenshot and look at it visually. The image shows exactly what a human would see.**
 
 **FINAL RESPONSE (JSON):**
 {
