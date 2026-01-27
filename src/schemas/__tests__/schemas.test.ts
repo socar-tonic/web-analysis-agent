@@ -5,6 +5,7 @@ import {
   DiagnosisSchema,
   DiagnosisType,
 } from '../index.js';
+import { SearchResultSchema } from '../search-result.schema.js';
 
 describe('FailureAlertSchema', () => {
   it('should parse valid failure alert', () => {
@@ -73,5 +74,40 @@ describe('DiagnosisSchema', () => {
     };
     const result = DiagnosisSchema.safeParse(input);
     expect(result.success).toBe(true);
+  });
+});
+
+describe('SearchResultSchema', () => {
+  it('should validate successful search result', () => {
+    const result = {
+      status: 'SUCCESS',
+      confidence: 0.95,
+      details: {
+        vehicleFound: true,
+        searchMethod: 'api',
+        resultCount: 1,
+      },
+      vehicle: {
+        id: '12345',
+        plateNumber: '12가3456',
+        inTime: '2026-01-27T10:00:00Z',
+      },
+      timestamp: new Date().toISOString(),
+    };
+    expect(() => SearchResultSchema.parse(result)).not.toThrow();
+  });
+
+  it('should validate not found result', () => {
+    const result = {
+      status: 'NOT_FOUND',
+      confidence: 0.9,
+      details: {
+        vehicleFound: false,
+        searchMethod: 'dom',
+        resultCount: 0,
+      },
+      timestamp: new Date().toISOString(),
+    };
+    expect(() => SearchResultSchema.parse(result)).not.toThrow();
   });
 });
