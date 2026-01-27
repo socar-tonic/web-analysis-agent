@@ -3,10 +3,10 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { HumanMessage, AIMessage, BaseMessage } from '@langchain/core/messages';
-import { tool, StructuredToolInterface } from '@langchain/core/tools';
+import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { writeFileSync } from 'fs';
-import { createReactAgent } from '@langchain/langgraph/prebuilt';
+import { createAgent, modelCallLimitMiddleware } from 'langchain';
 import { CredentialManager } from '../security/index.js';
 import { SpecStore, SpecChanges } from '../specs/index.js';
 import { LoginSpec, LoginResult } from '../schemas/index.js';
@@ -74,20 +74,26 @@ export class LoginAgent {
       const tools = await this.buildTools();
       console.log(`  [LoginAgent] ${tools.length} tools ready`);
 
-      // Create LangGraph ReAct agent
+      // Create LangChain agent with model call limit
       const systemPrompt = this.buildSystemPrompt();
-      const agent = createReactAgent({
-        llm: this.config.llm,
-        tools: tools as StructuredToolInterface[],
-        prompt: systemPrompt,
+      const agent = createAgent({
+        model: this.config.llm,
+        tools: tools,
+        systemPrompt: systemPrompt,
+        middleware: [
+          modelCallLimitMiddleware({
+            runLimit: this.config.maxIterations,
+            exitBehavior: 'end',
+          }),
+        ],
       });
 
-      console.log('\n  [LangGraph Agent] Starting...');
+      console.log('\n  [LangChain Agent] Starting...');
 
       // Run agent with recursion limit
       const agentResult = await agent.invoke(
         { messages: [new HumanMessage('Start: Navigate to the login page.')] },
-        { recursionLimit: this.config.maxIterations * 2 } // Each tool call = 2 steps
+        { recursionLimit: this.config.maxIterations * 3 }
       );
 
       // Extract final response from last AI message
@@ -110,7 +116,7 @@ export class LoginAgent {
         }
       }
 
-      console.log(`  [LangGraph Agent] Completed with ${messages.length} messages`);
+      console.log(`  [LangChain Agent] Completed with ${messages.length} messages`);
 
       // Parse LLM's final analysis
       const analysis = this.parseAnalysis(finalResponse);
