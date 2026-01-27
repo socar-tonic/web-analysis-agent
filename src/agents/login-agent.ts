@@ -385,59 +385,66 @@ export class LoginAgent {
         const value = this.config.credentialManager.getField(this.config.systemCode, field);
         if (!value) return `Error: No credential for ${this.config.systemCode}`;
 
-        try {
-          console.log(`      [secure_fill] field=${field}, element=${element}, valueLen=${value.length}`);
-
-          // Step 0: Dismiss any existing alert dialog first
+        const maxRetries = 3;
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
           try {
-            await this.mcpClient!.callTool({
-              name: 'browser_handle_dialog',
-              arguments: { accept: true },
-            });
-            console.log(`      [secure_fill] dismissed existing dialog`);
-          } catch {
-            // No dialog to dismiss, continue
-          }
+            console.log(`      [secure_fill] field=${field}, element=${element}, attempt=${attempt}`);
 
-          // Step 1: Click to focus the element first
-          await this.mcpClient!.callTool({
-            name: 'browser_click',
-            arguments: { ref: element },
-          });
-
-          // Step 2: Small delay for focus
-          await new Promise(resolve => setTimeout(resolve, 100));
-
-          // Step 3: Type the value
-          const mcpResult = await this.mcpClient!.callTool({
-            name: 'browser_type',
-            arguments: { ref: element, text: value, submit: false },
-          });
-          const content = mcpResult.content as any[];
-          const resultText = content?.map(c => c.text || '').join('\n') || '';
-          console.log(`      [secure_fill result] ${resultText.slice(0, 200)}`);
-
-          // Check for alert dialogs and dismiss them
-          if (resultText.includes('alert') || resultText.includes('dialog')) {
-            console.log(`      [secure_fill] alert detected, attempting to handle...`);
+            // Step 0: Always try to dismiss any existing dialog first
             try {
               await this.mcpClient!.callTool({
                 name: 'browser_handle_dialog',
                 arguments: { accept: true },
               });
+              console.log(`      [secure_fill] dismissed dialog`);
+              await new Promise(resolve => setTimeout(resolve, 200));
             } catch {
-              // Dialog handling tool might not exist, ignore
+              // No dialog, continue
+            }
+
+            // Step 1: Click to focus the element
+            await this.mcpClient!.callTool({
+              name: 'browser_click',
+              arguments: { ref: element },
+            });
+            await new Promise(resolve => setTimeout(resolve, 100));
+
+            // Step 2: Type the value
+            const mcpResult = await this.mcpClient!.callTool({
+              name: 'browser_type',
+              arguments: { ref: element, text: value, submit: false },
+            });
+            const content = mcpResult.content as any[];
+            const resultText = content?.map(c => c.text || '').join('\n') || '';
+
+            // Check for modal/dialog error - retry after dismissing
+            if (resultText.includes('modal state') || resultText.includes('dialog')) {
+              console.log(`      [secure_fill] modal detected, dismissing and retrying...`);
+              try {
+                await this.mcpClient!.callTool({
+                  name: 'browser_handle_dialog',
+                  arguments: { accept: true },
+                });
+              } catch { /* ignore */ }
+              await new Promise(resolve => setTimeout(resolve, 300));
+              continue; // retry
+            }
+
+            if (resultText.toLowerCase().includes('error')) {
+              console.log(`      [secure_fill error] ${resultText.slice(0, 150)}`);
+              return `Error filling ${field}: ${resultText}`;
+            }
+
+            console.log(`      [secure_fill] ${field} filled successfully`);
+            return `Filled ${field} field successfully`;
+          } catch (e) {
+            console.log(`      [secure_fill error] ${(e as Error).message}`);
+            if (attempt === maxRetries) {
+              return `Error: ${(e as Error).message}`;
             }
           }
-
-          if (resultText.toLowerCase().includes('error')) {
-            return `Error filling ${field}: ${resultText}`;
-          }
-          return `Filled ${field} field successfully`;
-        } catch (e) {
-          console.log(`      [secure_fill error] ${(e as Error).message}`);
-          return `Error: ${(e as Error).message}`;
         }
+        return `Error: Failed to fill ${field} after ${maxRetries} attempts`;
       },
       {
         name: 'secure_fill_credential',
