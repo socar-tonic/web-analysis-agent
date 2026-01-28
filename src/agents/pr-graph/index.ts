@@ -85,8 +85,11 @@ export class PRGraph {
 
       console.log(`[PRGraph] Complete. Status: ${finalState.status}`);
 
+      // Map status: pending should not happen after completion, treat as failed
+      const resultStatus: 'success' | 'failed' = finalState.status === 'success' ? 'success' : 'failed';
+
       return {
-        status: finalState.status,
+        status: resultStatus,
         prUrl: finalState.prUrl || undefined,
         prNumber: finalState.prNumber || undefined,
         branchName: finalState.branchName || undefined,
