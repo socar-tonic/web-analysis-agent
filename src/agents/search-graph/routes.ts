@@ -35,12 +35,8 @@ export function routeAfterSpecFallback(state: SearchGraphStateType): string {
   return state.searchMethod === 'api' ? 'executeApiSearch' : 'executeSearch';
 }
 
-// API 검색 후 라우팅 (API는 다음 화면 불가하지만 spec 비교는 필요)
-export function routeAfterApiSearch(state: SearchGraphStateType): string {
-  // spec이 있고 capturedRequests가 있으면 비교 수행
-  if (state.spec && state.capturedRequests.length > 0) {
-    return 'compareSpec';
-  }
+// API 검색 후 라우팅 (API는 다음 화면 불가하므로 바로 종료)
+export function routeAfterApiSearch(_state: SearchGraphStateType): string {
   return END;
 }
 

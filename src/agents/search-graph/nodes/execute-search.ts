@@ -1,7 +1,7 @@
 // src/agents/search-graph/nodes/execute-search.ts
 import type { SearchGraphStateType } from '../state.js';
 import { getNodeContext } from '../index.js';
-import { extractTextFromMcpResult, extractLast4Digits } from '../utils.js';
+import { extractTextFromMcpResult, extractLast4Digits, NETWORK_INTERCEPTOR_JS } from '../utils.js';
 
 /**
  * executeSearch node - Execute DOM-based vehicle search.
@@ -48,9 +48,24 @@ export async function executeSearch(
       return handleSearchError(inputResult.error!, analysisSource);
     }
 
-    console.log('  [executeSearch] Input complete, clicking search button...');
+    console.log('  [executeSearch] Input complete, installing network interceptor...');
 
-    // Step 2: Click search button
+    // Step 2: Install network interceptor BEFORE clicking search button
+    // This captures all XHR/fetch requests triggered by the search action
+    try {
+      await mcpClient.callTool({
+        name: 'browser_evaluate',
+        arguments: { function: NETWORK_INTERCEPTOR_JS },
+      });
+      console.log('  [executeSearch] Network interceptor installed');
+    } catch (e) {
+      console.log(`  [executeSearch] Failed to install network interceptor: ${(e as Error).message}`);
+      // Continue anyway - network capture is optional
+    }
+
+    console.log('  [executeSearch] Clicking search button...');
+
+    // Step 3: Click search button
     const clickResult = await clickSearchButton(
       mcpClient,
       formElements.searchButtonRef,
@@ -62,9 +77,9 @@ export async function executeSearch(
       return handleSearchError(clickResult.error!, analysisSource);
     }
 
-    // Step 3: Wait for results to load
-    console.log('  [executeSearch] Waiting for results...');
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    // Step 4: Wait for results to load (and network requests to complete)
+    console.log('  [executeSearch] Waiting for results and network requests...');
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
     console.log('  [executeSearch] Search executed successfully');
     return {};

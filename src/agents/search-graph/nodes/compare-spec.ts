@@ -37,34 +37,84 @@ export async function compareSpec(
   let changeType: 'dom' | 'api' | 'both' | null = null;
 
   // DOM-based comparison
-  if (existingSpec.searchType === 'dom' && existingSpec.form) {
-    const captured = state.formElements;
-    let domChangesDetected = false;
+  if (existingSpec.searchType === 'dom') {
+    // Compare DOM selectors if form spec exists
+    if (existingSpec.form) {
+      const captured = state.formElements;
+      let domChangesDetected = false;
 
-    // Compare search input selector
-    if (
-      captured.searchInputSelector &&
-      captured.searchInputSelector !== existingSpec.form.searchInputSelector
-    ) {
-      changes.push(
-        `검색 입력 셀렉터 변경: ${existingSpec.form.searchInputSelector} -> ${captured.searchInputSelector}`
-      );
-      domChangesDetected = true;
+      // Compare search input selector
+      if (
+        captured.searchInputSelector &&
+        captured.searchInputSelector !== existingSpec.form.searchInputSelector
+      ) {
+        changes.push(
+          `검색 입력 셀렉터 변경: ${existingSpec.form.searchInputSelector} -> ${captured.searchInputSelector}`
+        );
+        domChangesDetected = true;
+      }
+
+      // Compare search button selector
+      if (
+        captured.searchButtonSelector &&
+        captured.searchButtonSelector !== existingSpec.form.searchButtonSelector
+      ) {
+        changes.push(
+          `검색 버튼 셀렉터 변경: ${existingSpec.form.searchButtonSelector} -> ${captured.searchButtonSelector}`
+        );
+        domChangesDetected = true;
+      }
+
+      if (domChangesDetected) {
+        changeType = 'dom';
+      }
     }
 
-    // Compare search button selector
-    if (
-      captured.searchButtonSelector &&
-      captured.searchButtonSelector !== existingSpec.form.searchButtonSelector
-    ) {
-      changes.push(
-        `검색 버튼 셀렉터 변경: ${existingSpec.form.searchButtonSelector} -> ${captured.searchButtonSelector}`
-      );
-      domChangesDetected = true;
-    }
+    // DOM 검색도 백그라운드에서 API를 호출할 수 있음 - spec.api가 있으면 비교
+    if (existingSpec.api && state.capturedRequests.length > 0) {
+      console.log(`  [compareSpec] DOM search captured ${state.capturedRequests.length} network requests, comparing with spec.api...`);
 
-    if (domChangesDetected) {
-      changeType = 'dom';
+      const specEndpoint = existingSpec.api.endpoint.split('?')[0];
+      const specMethod = existingSpec.api.method.toUpperCase();
+
+      // 캡처된 요청 중 검색 관련 API 찾기
+      const searchApiPatterns = ['search', 'vehicle', 'car', 'parking', 'query', 'inquiry', '조회'];
+      const capturedApiCalls = state.capturedRequests.filter((r) =>
+        searchApiPatterns.some((pattern) =>
+          r.url.toLowerCase().includes(pattern)
+        )
+      );
+
+      console.log(`  [compareSpec] Found ${capturedApiCalls.length} search-related API calls`);
+
+      for (const call of capturedApiCalls) {
+        const capturedEndpoint = call.url.split('?')[0];
+        const capturedMethod = (call.method || 'GET').toUpperCase();
+
+        console.log(`    - Captured: ${capturedMethod} ${capturedEndpoint}`);
+        console.log(`    - Spec:     ${specMethod} ${specEndpoint}`);
+
+        // Compare endpoint
+        if (capturedEndpoint !== specEndpoint) {
+          changes.push(
+            `API 엔드포인트 변경: ${existingSpec.api.endpoint} -> ${call.url}`
+          );
+          changeType = changeType === 'dom' ? 'both' : 'api';
+        }
+
+        // Compare HTTP method
+        if (capturedMethod !== specMethod) {
+          changes.push(
+            `API 메서드 변경: ${existingSpec.api.method} -> ${call.method}`
+          );
+          changeType = changeType === 'dom' ? 'both' : 'api';
+        }
+      }
+
+      // 검색 관련 API가 캡처되지 않았는데 spec에 api가 있으면 경고
+      if (capturedApiCalls.length === 0) {
+        console.log(`  [compareSpec] Warning: spec.api exists but no search API calls were captured`);
+      }
     }
   }
 
