@@ -41,11 +41,26 @@ export interface CapturedNetworkRequest {
   timestamp: number;
 }
 
+// Captured API schema for spec update suggestions
+export interface CapturedApiSchema {
+  endpoint: string;
+  method: string;
+  params?: Record<string, string>;
+  requestBody?: Record<string, any>;
+  responseSchema?: {
+    type: 'object' | 'array' | 'primitive';
+    fields?: string[];
+    sample?: any;
+  };
+}
+
 export interface SpecChanges {
   hasChanges: boolean;
   changeType: 'dom' | 'api' | 'both' | null;
   changes: string[];
   codeWillBreak: boolean;
+  // New: captured API details for spec updates
+  capturedApiSchema?: CapturedApiSchema;
 }
 
 export const SearchGraphState = Annotation.Root({

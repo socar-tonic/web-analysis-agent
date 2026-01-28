@@ -3,16 +3,17 @@ import { HumanMessage } from '@langchain/core/messages';
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { createAgent } from 'langchain';
-import type { SearchGraphStateType, SpecChanges } from '../state.js';
+import type { SearchGraphStateType, SpecChanges, CapturedApiSchema } from '../state.js';
 import { getNodeContext } from '../index.js';
 
 const COMPARE_SPEC_PROMPT = `You are comparing captured network requests from a browser session with the expected API specification.
 
 ## Your Task
-Analyze the captured network requests and compare them with the spec's search API definition to detect any changes.
+1. Compare the captured search API with the spec to detect any changes
+2. If changes detected, extract the FULL schema of the new API for spec updates
 
 ## Input You'll Receive
-1. Captured network requests (URLs, methods, response status)
+1. Captured network requests (URLs, methods, request/response bodies)
 2. Spec's expected search API (endpoint pattern, method)
 
 ## What to Compare
@@ -25,28 +26,48 @@ Analyze the captured network requests and compare them with the spec's search AP
 
 ### HTTP Method Comparison
 - Compare GET vs POST vs PUT etc.
-- Method change indicates API signature change
 
 ## Response Format (JSON only, no markdown)
+
+When changes ARE detected:
 {
-  "hasChanges": true/false,
-  "changeType": "api" | "dom" | "both" | null,
-  "changes": [
-    "API 엔드포인트 변경: /old/path -> /new/path",
-    "API 메서드 변경: GET -> POST"
-  ],
-  "codeWillBreak": true/false,
-  "reasoning": "Explanation of comparison"
+  "hasChanges": true,
+  "changeType": "api",
+  "changes": ["API 엔드포인트 변경: /old/path -> /new/path"],
+  "codeWillBreak": true,
+  "capturedApiSchema": {
+    "endpoint": "/o.traffic/{{siteId}}",
+    "method": "GET",
+    "params": {
+      "sortBy": "string (예: inTime-1)",
+      "searchType": "string (예: NOT_OUT)",
+      "plateNumber": "string (차량번호 4자리)",
+      "inTimeGTE": "number (timestamp, 검색 시작일)",
+      "inTimeLTE": "number (timestamp, 검색 종료일)",
+      "rows": "number (결과 개수)"
+    },
+    "responseSchema": {
+      "type": "array",
+      "fields": ["id", "plateNumber", "inTime", "outTime", "parkingFee"],
+      "sample": {"id": "...", "plateNumber": "1234", "inTime": 1234567890}
+    }
+  },
+  "reasoning": "Explanation"
 }
 
-If no search-related API calls were captured:
+When NO changes detected or no API calls captured:
 {
   "hasChanges": false,
   "changeType": null,
   "changes": [],
   "codeWillBreak": false,
-  "reasoning": "No search API calls were captured to compare"
-}`;
+  "reasoning": "Explanation"
+}
+
+IMPORTANT: For capturedApiSchema:
+- endpoint: Replace dynamic IDs with template variables like {{siteId}}, {{storeId}}
+- params: Describe each query parameter with its type and example
+- responseSchema: Extract field names from the response, include sample values`;
 
 /**
  * Extract search API info from spec (handles multiple formats)
@@ -123,24 +144,38 @@ export async function compareSpec(
   console.log(`  [compareSpec] Spec search API: ${searchApi.method} ${searchApi.endpoint}`);
   console.log(`  [compareSpec] Captured ${state.capturedRequests.length} network requests`);
 
-  // Build context for LLM
-  const capturedRequestsSummary = state.capturedRequests.map(r => ({
-    url: r.url,
-    method: r.method || 'GET',
-    status: r.responseStatus,
-  }));
+  // Build full context for LLM (including request/response bodies for schema extraction)
+  const capturedRequestsFull = state.capturedRequests.map(r => {
+    // Parse query params from URL
+    let params: Record<string, string> = {};
+    try {
+      const urlObj = new URL(r.url);
+      urlObj.searchParams.forEach((value, key) => {
+        params[key] = value;
+      });
+    } catch { /* ignore invalid URLs */ }
 
-  // Create a simple tool to get comparison data
+    return {
+      url: r.url,
+      method: r.method || 'GET',
+      status: r.responseStatus,
+      params: Object.keys(params).length > 0 ? params : undefined,
+      requestBody: r.requestBody,
+      responseBody: r.responseBody,
+    };
+  });
+
+  // Create a tool to get comparison data with full details
   const getComparisonDataTool = tool(
     async () => {
       return JSON.stringify({
         specSearchApi: searchApi,
-        capturedRequests: capturedRequestsSummary,
+        capturedRequests: capturedRequestsFull,
       }, null, 2);
     },
     {
       name: 'get_comparison_data',
-      description: 'Get the spec search API and captured network requests for comparison',
+      description: 'Get the spec search API and captured network requests (including params and response bodies) for comparison and schema extraction',
       schema: z.object({
         _unused: z.string().optional(),
       }),
@@ -181,7 +216,14 @@ export async function compareSpec(
     };
 
     try {
-      const jsonMatch = finalResponse.match(/\{[\s\S]*\}/);
+      // Handle markdown code blocks
+      let jsonStr = finalResponse;
+      const codeBlockMatch = finalResponse.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (codeBlockMatch) {
+        jsonStr = codeBlockMatch[1].trim();
+      }
+
+      const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
         specChanges = {
@@ -190,6 +232,17 @@ export async function compareSpec(
           changes: parsed.changes || [],
           codeWillBreak: parsed.codeWillBreak || false,
         };
+
+        // Extract captured API schema if present
+        if (parsed.capturedApiSchema) {
+          specChanges.capturedApiSchema = {
+            endpoint: parsed.capturedApiSchema.endpoint,
+            method: parsed.capturedApiSchema.method,
+            params: parsed.capturedApiSchema.params,
+            requestBody: parsed.capturedApiSchema.requestBody,
+            responseSchema: parsed.capturedApiSchema.responseSchema,
+          };
+        }
       }
     } catch (e) {
       console.log(`  [compareSpec] Failed to parse response: ${(e as Error).message}`);
@@ -199,6 +252,18 @@ export async function compareSpec(
       console.log(`  [compareSpec] Changes detected (${specChanges.changes.length}):`);
       for (const change of specChanges.changes) {
         console.log(`    - ${change}`);
+      }
+
+      // Log captured API schema if present
+      if (specChanges.capturedApiSchema) {
+        console.log('  [compareSpec] Captured API Schema:');
+        console.log(`    endpoint: ${specChanges.capturedApiSchema.method} ${specChanges.capturedApiSchema.endpoint}`);
+        if (specChanges.capturedApiSchema.params) {
+          console.log('    params:', JSON.stringify(specChanges.capturedApiSchema.params, null, 2).split('\n').map(l => '      ' + l).join('\n'));
+        }
+        if (specChanges.capturedApiSchema.responseSchema) {
+          console.log('    responseSchema:', JSON.stringify(specChanges.capturedApiSchema.responseSchema, null, 2).split('\n').map(l => '      ' + l).join('\n'));
+        }
       }
     } else {
       console.log('  [compareSpec] No changes detected');
