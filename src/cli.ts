@@ -5,6 +5,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { LoginAgent, SearchAgent } from './agents/index.js';
 import { LoginGraph } from './agents/login-graph/index.js';
+import { SearchGraph } from './agents/search-graph/index.js';
+import { AnalysisOrchestrator } from './orchestrator/index.js';
 import { CredentialManager } from './security/index.js';
 import { SpecStore } from './specs/index.js';
 import { createLLMForAgent } from './llm/index.js';
@@ -302,6 +304,134 @@ async function runLoginAndSearchCommand(input: MockInput): Promise<AgentResult[]
   }
 }
 
+// Combined Login Graph -> Search Graph flow with shared MCP client
+async function runLoginSearchGraphCommand(input: MockInput): Promise<AgentResult[]> {
+  console.log(`\n[Login Graph -> Search Graph] Starting with shared browser session...`);
+
+  // Create LLMs for each graph (can be different models)
+  const loginLLM = createLLMForAgent('login');
+  const searchLLM = createLLMForAgent('search');
+
+  // Create shared MCP client
+  const transport = new StdioClientTransport({
+    command: 'npx',
+    args: ['@playwright/mcp@latest', '--headless', '--isolated'],
+  });
+
+  const sharedMcp = new Client({ name: 'shared-session', version: '1.0.0' });
+
+  try {
+    await sharedMcp.connect(transport);
+    console.log('  [Shared MCP] Connected');
+
+    const credManager = new CredentialManager();
+    credManager.set(input.systemCode, { username: input.id, password: input.pwd });
+    const specStore = new SpecStore();
+
+    // Step 1: LoginGraph (using shared MCP)
+    console.log('\n  [Step 1] Running LoginGraph...');
+    const loginGraph = new LoginGraph({
+      systemCode: input.systemCode,
+      url: input.url,
+      credentialManager: credManager,
+      specStore,
+      llm: loginLLM,
+      mcpClient: sharedMcp,
+    });
+
+    const { result: loginResult, spec: loginSpec } = await loginGraph.run();
+
+    console.log(`\n  [Login Result] ${loginResult.status} (confidence: ${loginResult.confidence})`);
+
+    // Check login success
+    if (loginResult.status !== 'SUCCESS') {
+      console.log('  [Flow] Login failed, skipping search');
+      return [{
+        agent: 'login-graph',
+        success: false,
+        analysis: JSON.stringify({ result: loginResult, spec: loginSpec }, null, 2),
+        data: { result: loginResult, spec: loginSpec },
+      }];
+    }
+
+    console.log('  [Flow] Login successful, browser session maintained');
+
+    // Step 2: SearchGraph (using same shared MCP - browser already logged in)
+    console.log('\n  [Step 2] Running SearchGraph (same browser session)...');
+    const searchGraph = new SearchGraph({
+      systemCode: input.systemCode,
+      url: input.url,
+      carNum: input.carNum,
+      session: loginResult.session || {},
+      specStore,
+      llm: searchLLM,
+      mcpClient: sharedMcp,
+    });
+
+    const { result: searchResult, spec: searchSpec, readyForDiscount } = await searchGraph.run();
+
+    console.log(`\n  [Search Result] ${searchResult.status} (confidence: ${searchResult.confidence})`);
+    console.log(`  [Ready for Discount] ${readyForDiscount}`);
+
+    return [
+      {
+        agent: 'login-graph',
+        success: !loginResult.changes?.codeWillBreak,
+        analysis: JSON.stringify({ result: loginResult, spec: loginSpec }, null, 2),
+        data: { result: loginResult, spec: loginSpec },
+      },
+      {
+        agent: 'search-graph',
+        success: !searchResult.changes?.codeWillBreak,
+        analysis: JSON.stringify({ result: searchResult, spec: searchSpec, readyForDiscount }, null, 2),
+        data: { result: searchResult, spec: searchSpec, readyForDiscount },
+      },
+    ];
+  } finally {
+    await sharedMcp.close().catch(() => {});
+    console.log('\n  [Shared MCP] Closed');
+  }
+}
+
+// ============================================================
+// Analyze Command (Full Orchestrator)
+// ============================================================
+
+async function runAnalyzeCommand(input: MockInput): Promise<AgentResult> {
+  console.log(`\n[Analysis Orchestrator] Starting full analysis for: ${input.systemCode}`);
+
+  const llm = createLLMForAgent('login');
+
+  const orchestrator = new AnalysisOrchestrator({
+    llm,
+    slackWebhookUrl: process.env.SLACK_WEBHOOK_URL || 'mock',
+  });
+
+  const result = await orchestrator.run({
+    systemCode: input.systemCode,
+    url: input.url,
+    username: input.id,
+    password: input.pwd,
+    carNum: input.carNum,
+  });
+
+  console.log('\n=== Analysis Result ===');
+  console.log('Action:', result.action);
+  if (result.prUrl) {
+    console.log('PR URL:', result.prUrl);
+  }
+  if (result.error) {
+    console.log('Error:', result.error);
+  }
+
+  return {
+    agent: 'orchestrator',
+    success: result.action !== 'notified' || !result.error,
+    analysis: JSON.stringify(result, null, 2),
+    data: result,
+  };
+}
+
 // ============================================================
 // Main
 // ============================================================
@@ -341,9 +471,15 @@ async function main() {
   } else if (agentArg === 'search') {
     // Search requires login first - run combined flow
     results = await runLoginAndSearchCommand(input);
+  } else if (agentArg === 'login-search') {
+    // LoginGraph -> SearchGraph flow with shared MCP
+    results = await runLoginSearchGraphCommand(input);
+  } else if (agentArg === 'analyze') {
+    // Full orchestrator flow with automatic PR generation
+    results.push(await runAnalyzeCommand(input));
   } else {
     console.error(`\n[ERROR] Unknown command: ${agentArg}`);
-    console.error('   Available commands: login, login-graph, search');
+    console.error('   Available commands: login, login-graph, search, login-search, analyze');
     process.exit(1);
   }
 
