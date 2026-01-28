@@ -104,6 +104,15 @@ export class LoginGraph {
           errorMessage: finalState.errorMessage || undefined,
         },
         session: finalState.session || undefined,
+        // Include spec changes in result
+        changes: finalState.specChanges?.hasChanges
+          ? {
+              hasChanges: true,
+              codeWillBreak: true, // Spec changes indicate potential code breakage
+              breakingChanges: finalState.specChanges.changes,
+              summary: `[${finalState.specChanges.changeType}] ${finalState.specChanges.changes.join(', ')}`,
+            }
+          : undefined,
         timestamp,
       };
 

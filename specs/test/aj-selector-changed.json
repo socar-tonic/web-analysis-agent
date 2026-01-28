@@ -1,0 +1,94 @@
+{
+  "systemCode": "aj",
+  "url": "{{env.url}}",
+  "capturedAt": "2026-01-27T12:00:00.000Z",
+  "version": 1,
+  "_testDescription": "셀렉터 변경 테스트: input[name='userId'] (스펙) vs input[name='j_username'] (실제)",
+
+  "implementationType": "hybrid",
+  "description": "AJ 주차 할인 시스템 - Form POST + HTML 파싱 방식",
+
+  "steps": {
+    "login": {
+      "type": "form-post",
+      "endpoint": "/login",
+      "method": "POST",
+      "contentType": "application/x-www-form-urlencoded",
+      "requestFields": {
+        "j_username": "{{env.id}}",
+        "j_password": "{{env.pwd}}"
+      },
+      "followRedirects": true,
+      "sessionType": "cookie-jar",
+      "failureIndicators": {
+        "responseContains": ["로그인 정보가 잘못 되었습니다", "잘못 입력했습니다"]
+      }
+    },
+
+    "search": {
+      "type": "form-post",
+      "endpoint": "/discount/carSearch.cs",
+      "method": "POST",
+      "contentType": "application/x-www-form-urlencoded",
+      "requestFields": {
+        "carNumber": "{{carNum.slice(-4)}}",
+        "from": "{{moment().format('YYYY-MM-DD')}}",
+        "formHH": "00"
+      },
+      "followRedirects": true,
+      "parsing": {
+        "type": "html",
+        "selectors": {
+          "rows": "tr[onclick]",
+          "pKey": "$(row).attr('onclick') -> extract pKey param",
+          "carNum": "$(row).find('td').eq(1).find('b').text()",
+          "enterTime": "date + ' ' + time from $(row).find('td').eq(1).find('p')"
+        }
+      },
+      "responseFields": ["pKey", "carNum", "enterTime"]
+    },
+
+    "discount": {
+      "type": "api",
+      "endpoint": "/discount/discountApplyProc.cs",
+      "method": "GET",
+      "params": {
+        "pKey": "{{parkingInfo.pKey}}",
+        "dCode": "{{ticketInfo.discountId}}",
+        "dKind": "매수차감",
+        "fDays": "",
+        "remark": ""
+      },
+      "followRedirects": true
+    }
+  },
+
+  "form": {
+    "usernameSelector": "input[name='userId']",
+    "passwordSelector": "input[name='j_password']",
+    "submitSelector": "button[type='submit'], input[type='submit']"
+  },
+
+  "successIndicators": {
+    "login": {
+      "notContains": ["로그인 정보가 잘못 되었습니다", "잘못 입력했습니다"],
+      "hasCookieJar": true
+    },
+    "search": {
+      "hasResults": true,
+      "responseFields": ["pKey", "carNum", "enterTime"]
+    },
+    "discount": {
+      "responseReceived": true
+    }
+  },
+
+  "hints": {
+    "login": {
+      "usernameSelector": "textbox[name='ID 입력']",
+      "passwordSelector": "textbox[name='비밀번호 입력']",
+      "submitSelector": "button[name='로그인']",
+      "failureTexts": ["로그인 정보가 잘못 되었습니다", "잘못 입력했습니다"]
+    }
+  }
+}

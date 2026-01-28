@@ -27,6 +27,13 @@ export function routeAfterScreenshot(state: LoginGraphStateType): string {
 }
 
 export function routeAfterVerify(state: LoginGraphStateType): string {
+  // If spec changes were detected, report and end
+  if (state.specChanges?.hasChanges) {
+    console.log(`  [route] Spec changes detected (${state.specChanges.changeType}): ${state.specChanges.changes.join(', ')}`);
+    return END;
+  }
+
+  // Continue to extract session if login was successful
   if (state.status === 'SUCCESS') {
     return 'extractSession';
   }

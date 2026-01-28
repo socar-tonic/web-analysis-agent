@@ -4,32 +4,56 @@ import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { writeFileSync } from 'fs';
 import { createAgent } from 'langchain';
-import type { LoginGraphStateType, LoginStatus } from '../state.js';
+import type { LoginGraphStateType, LoginStatus, SpecChanges } from '../state.js';
 import { getNodeContext } from '../index.js';
 import { extractTextFromMcpResult } from '../utils.js';
 
-const VERIFY_PROMPT = `You are analyzing the result of a login attempt.
+const VERIFY_PROMPT = `You are analyzing the result of a login attempt and comparing it against the existing spec.
 
-Current URL: {currentUrl}
-URL Changed: {urlChanged}
-Network Requests: {networkRequests}
+## Current State
+- Current URL: {currentUrl}
+- URL Changed: {urlChanged}
+- Form Elements Used: {formElements}
+- Network Requests Captured: {capturedNetworkRequests}
 
-Your task:
-1. Take a snapshot of the current page using browser_snapshot
-2. Take a screenshot using browser_take_screenshot to see what the user would see
-3. Analyze the page content and determine the login result
+## Existing Spec (for comparison)
+{spec}
 
-Determine the login status:
+## Your Tasks
+
+### 1. Verify Login Result
+Take a snapshot and screenshot to analyze the login result:
 - SUCCESS: User is logged in (dashboard, welcome message, user info visible, URL changed to member area)
 - INVALID_CREDENTIALS: Login failed due to wrong username/password (error message visible, "잘못된 비밀번호", "로그인 실패", etc.)
 - FORM_CHANGED: The login form structure has changed (selectors don't match, form not found)
 - UNKNOWN_ERROR: Cannot determine the result
 
-After analysis, provide your final answer as JSON:
+### 2. Compare with Spec (if spec exists)
+Compare the captured behavior against the existing spec:
+
+**For API-based specs (steps.login.type === "api"):**
+- Check if the login endpoint URL matches spec.steps.login.endpoint
+- Check if the HTTP method matches spec.steps.login.method
+- Check if request fields match spec.steps.login.requestFields
+- Check if response contains expected fields from spec.steps.login.responseFields
+
+**For DOM-based specs (form or hints.login exists):**
+- Check if the username selector matches spec.form.usernameSelector or spec.hints.login.usernameSelector
+- Check if the password selector matches spec.form.passwordSelector or spec.hints.login.passwordSelector
+- Check if the submit selector matches spec.form.submitSelector or spec.hints.login.submitSelector
+
+Report any differences as spec changes.
+
+## Response Format (JSON)
 {
   "status": "SUCCESS|INVALID_CREDENTIALS|FORM_CHANGED|UNKNOWN_ERROR",
   "confidence": 0.0-1.0,
-  "errorMessage": "optional error message"
+  "errorMessage": "optional error message",
+  "specChanges": {
+    "hasChanges": true/false,
+    "changeType": "dom|api|both|null",
+    "changes": ["list of detected changes in Korean"]
+  }
 }`;
 
 export async function verifyResult(
@@ -102,6 +126,11 @@ export async function verifyResult(
   );
 
   try {
+    // Prepare spec info for the prompt
+    const specInfo = state.spec
+      ? JSON.stringify(state.spec, null, 2)
+      : 'No existing spec available for comparison.';
+
     // Create agent with tools
     const agent = createAgent({
       model: llm,
@@ -109,7 +138,9 @@ export async function verifyResult(
       systemPrompt: VERIFY_PROMPT
         .replace('{currentUrl}', state.currentUrl)
         .replace('{urlChanged}', String(state.currentUrl !== state.url))
-        .replace('{networkRequests}', JSON.stringify(state.networkRequests.slice(0, 5))),
+        .replace('{formElements}', JSON.stringify(state.formElements))
+        .replace('{capturedNetworkRequests}', JSON.stringify(state.capturedNetworkRequests.slice(0, 10), null, 2))
+        .replace('{spec}', specInfo),
     });
 
     const result = await agent.invoke(
@@ -135,6 +166,7 @@ export async function verifyResult(
     let status: LoginStatus = 'UNKNOWN_ERROR';
     let confidence = 0.5;
     let errorMessage: string | null = null;
+    let specChanges: SpecChanges | null = null;
 
     try {
       const jsonMatch = finalResponse.match(/\{[\s\S]*\}/);
@@ -143,17 +175,30 @@ export async function verifyResult(
         status = parsed.status || 'UNKNOWN_ERROR';
         confidence = parsed.confidence || 0.5;
         errorMessage = parsed.errorMessage || null;
+
+        // Parse spec changes if present
+        if (parsed.specChanges) {
+          specChanges = {
+            hasChanges: parsed.specChanges.hasChanges || false,
+            changeType: parsed.specChanges.changeType || null,
+            changes: parsed.specChanges.changes || [],
+          };
+        }
       }
     } catch (e) {
       console.log(`  [verifyResult] Failed to parse response: ${(e as Error).message}`);
     }
 
     console.log(`  [verifyResult] Result: status=${status}, confidence=${confidence}`);
+    if (specChanges?.hasChanges) {
+      console.log(`  [verifyResult] Spec changes detected: ${specChanges.changes.join(', ')}`);
+    }
 
     return {
       status,
       confidence,
       errorMessage,
+      specChanges,
     };
   } catch (e) {
     console.log(`  [verifyResult] Error: ${(e as Error).message}`);

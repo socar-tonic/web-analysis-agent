@@ -8,7 +8,8 @@ import {
   routeAfterVerify,
 } from './routes.js';
 
-// Node imports (will be implemented in Task 2 & 3)
+// Node imports
+import { loadSpec } from './nodes/load-spec.js';
 import { checkConnection } from './nodes/check-connection.js';
 import { analyzeForm } from './nodes/analyze-form.js';
 import { screenshotFallback } from './nodes/screenshot-fallback.js';
@@ -20,6 +21,7 @@ import { extractSession } from './nodes/extract-session.js';
 export function buildLoginGraph() {
   const workflow = new StateGraph(LoginGraphState)
     // Add nodes
+    .addNode('loadSpec', loadSpec)
     .addNode('checkConnection', checkConnection)
     .addNode('analyzeForm', analyzeForm)
     .addNode('screenshotFallback', screenshotFallback)
@@ -28,8 +30,9 @@ export function buildLoginGraph() {
     .addNode('verifyResult', verifyResult)
     .addNode('extractSession', extractSession)
 
-    // Entry point
-    .addEdge(START, 'checkConnection')
+    // Entry point: load spec first, then check connection
+    .addEdge(START, 'loadSpec')
+    .addEdge('loadSpec', 'checkConnection')
 
     // Conditional edges
     .addConditionalEdges('checkConnection', routeAfterConnection, {

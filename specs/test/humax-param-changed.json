@@ -1,0 +1,94 @@
+{
+  "systemCode": "humax-parcs-api",
+  "url": "https://console.humax-parcs.com",
+  "baseUrl": "https://mhp.humax-parcs.com:8755",
+  "capturedAt": "2026-01-26T00:00:00.000Z",
+  "version": 1,
+  "_testDescription": "파라미터명 변경 테스트: username33 (스펙) vs username (실제)",
+
+  "steps": {
+    "login": {
+      "type": "api",
+      "endpoint": "/auth",
+      "method": "POST",
+      "contentType": "application/x-www-form-urlencoded",
+      "requestFields": {
+        "grant_type": "password",
+        "username33": "{{env.id}}",
+        "password": "{{env.pwd}}"
+      },
+      "responseFields": ["access_token"]
+    },
+
+    "getStoreInfo": {
+      "type": "api",
+      "endpoint": "/stores.store.account",
+      "method": "GET",
+      "responseFields": ["siteId", "storeId"]
+    },
+
+    "getDiscountItems": {
+      "type": "api",
+      "endpoint": "/stores.discountItems.secondary/{{siteId}}/{{storeId}}",
+      "method": "GET",
+      "responseFields": ["discountItemId", "discountItemName"]
+    },
+
+    "search": {
+      "type": "api",
+      "endpoint": "/in.store/{{siteId}}",
+      "method": "GET",
+      "params": {
+        "searchType": "NOT_OUT",
+        "action": "FOUR_DIGIT",
+        "plateNumber": "{{carNum.slice(-4)}}",
+        "fromAt": "{{startOfDay(subDays(now, 6)).getTime()}}",
+        "toAt": "{{endOfToday().getTime()}}"
+      },
+      "responseFields": ["id", "lastOrderId", "plateNumber", "inTime", "outTime"]
+    },
+
+    "discount": {
+      "type": "api",
+      "endpoint": "/stores.discountItems.use/{{siteId}}/{{discountItemId}}",
+      "method": "PUT",
+      "requestFields": {
+        "applyCount": 1,
+        "inId": "{{parkingEntry.id}}",
+        "inOrderId": "{{parkingEntry.lastOrderId}}",
+        "memo": ""
+      }
+    },
+
+    "check": {
+      "type": "api",
+      "endpoint": "/stores.discountItems.use/{{siteId}}/{{storeId}}",
+      "method": "GET",
+      "params": {
+        "plateNumberAction": "LIKE",
+        "discountNameAction": "NONE",
+        "plateNumber": "{{carNum}}",
+        "dateType": "APPLY_DATE",
+        "fromAt": "{{subMinutes(now, 30).getTime()}}",
+        "toAt": "{{addMinutes(now, 1).getTime()}}",
+        "page": 1,
+        "size": 20,
+        "direction": "DESC",
+        "sortField": "id"
+      },
+      "responseFields": ["plateNumber", "inTime"]
+    }
+  },
+
+  "successIndicators": {
+    "login": {
+      "hasField": "access_token"
+    },
+    "search": {
+      "resultCode": "SUCCESS"
+    },
+    "discount": {
+      "resultCode": "SUCCESS"
+    }
+  }
+}
