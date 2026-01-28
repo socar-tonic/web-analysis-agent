@@ -42,12 +42,20 @@ Example:
 - Ignore CAPTCHA-related inputs
 - The submit button is usually the last element in the form
 
-Return ONLY valid JSON with refs from the snapshot (no markdown, no explanation):
+Return ONLY valid JSON with refs AND element attributes from the snapshot (no markdown, no explanation):
 {
   "usernameRef": "e12",
+  "usernameSelector": "input[name='username']",
   "passwordRef": "e18",
-  "submitRef": "e24"
+  "passwordSelector": "input[name='password']",
+  "submitRef": "e24",
+  "submitSelector": "button[type='submit']"
 }
+
+For selectors, use the most specific attribute you can find:
+- Prefer name attribute: input[name='j_username']
+- Or id attribute: input#userId
+- Or type+placeholder: input[type='text'][placeholder='아이디']
 
 If you cannot find a field, use null for that field.`;
 
@@ -79,8 +87,11 @@ export async function analyzeForm(
     // Parse JSON response
     let formElements: FormElements = {
       usernameRef: null,
+      usernameSelector: null,
       passwordRef: null,
+      passwordSelector: null,
       submitRef: null,
+      submitSelector: null,
     };
 
     try {
@@ -90,8 +101,11 @@ export async function analyzeForm(
         const parsed = JSON.parse(jsonMatch[0]);
         formElements = {
           usernameRef: parsed.usernameRef || null,
+          usernameSelector: parsed.usernameSelector || null,
           passwordRef: parsed.passwordRef || null,
+          passwordSelector: parsed.passwordSelector || null,
           submitRef: parsed.submitRef || null,
+          submitSelector: parsed.submitSelector || null,
         };
       }
     } catch (e) {
@@ -108,9 +122,9 @@ export async function analyzeForm(
     console.log(`  [analyzeForm] Error: ${(e as Error).message}`);
     return {
       formElements: {
-        usernameRef: null,
-        passwordRef: null,
-        submitRef: null,
+        usernameRef: null, usernameSelector: null,
+        passwordRef: null, passwordSelector: null,
+        submitRef: null, submitSelector: null,
       },
     };
   }

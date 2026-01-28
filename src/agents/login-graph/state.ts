@@ -29,8 +29,11 @@ export interface SessionInfo {
 
 export interface FormElements {
   usernameRef: string | null;
+  usernameSelector: string | null;
   passwordRef: string | null;
+  passwordSelector: string | null;
   submitRef: string | null;
+  submitSelector: string | null;
 }
 
 export type LoginStatus =
@@ -55,7 +58,11 @@ export const LoginGraphState = Annotation.Root({
   // Form analysis results
   formElements: Annotation<FormElements>({
     reducer: (_, b) => b,
-    default: () => ({ usernameRef: null, passwordRef: null, submitRef: null }),
+    default: () => ({
+      usernameRef: null, usernameSelector: null,
+      passwordRef: null, passwordSelector: null,
+      submitRef: null, submitSelector: null,
+    }),
   }),
 
   // Execution state
