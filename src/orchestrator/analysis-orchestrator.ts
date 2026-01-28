@@ -47,10 +47,10 @@ export class AnalysisOrchestrator {
 
     console.log(`[Orchestrator] Starting analysis for ${systemCode}`);
 
-    // Playwright MCP 클라이언트 생성
+    // Playwright MCP 클라이언트 생성 (--isolated로 시크릿 모드)
     const playwrightTransport = new StdioClientTransport({
       command: 'npx',
-      args: ['@playwright/mcp@latest', '--headless'],
+      args: ['@playwright/mcp@latest', '--headless', '--isolated'],
     });
     const playwrightMcp = new Client({ name: 'orchestrator-playwright', version: '1.0.0' });
     await playwrightMcp.connect(playwrightTransport);
