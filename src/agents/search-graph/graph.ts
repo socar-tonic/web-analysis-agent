@@ -69,8 +69,9 @@ export function buildSearchGraph() {
     })
 
     // Search execution paths
-    // executeApiSearch -> END (API is terminal, no DOM to continue)
+    // executeApiSearch -> compareSpec | END (API는 다음 화면 불가하지만 spec 비교는 필요)
     .addConditionalEdges('executeApiSearch', routeAfterApiSearch, {
+      compareSpec: 'compareSpec',
       [END]: END,
     })
 
