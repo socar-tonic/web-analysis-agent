@@ -2,6 +2,8 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import type { CapturedApiSchema } from '../search-graph/state.js';
+import { buildPRGraph } from './graph.js';
+import type { PRGraphStateType } from './state.js';
 
 export interface PRGraphConfig {
   systemCode: string;
@@ -39,3 +41,59 @@ export function clearNodeContext(): void {
 
 // Re-export state types
 export type { PRGraphStateType } from './state.js';
+
+export interface PRGraphResult {
+  status: 'success' | 'failed';
+  prUrl?: string;
+  prNumber?: number;
+  branchName?: string;
+  errorMessage?: string;
+}
+
+export class PRGraph {
+  private config: PRGraphConfig;
+
+  constructor(config: PRGraphConfig) {
+    this.config = config;
+  }
+
+  async run(): Promise<PRGraphResult> {
+    const repoOwner = process.env.BATCH_REPO_OWNER || 'socar-inc';
+    const repoName = process.env.BATCH_REPO_NAME || 'modu-batch-webdc';
+
+    try {
+      setNodeContext({
+        mcpClient: this.config.mcpClient,
+        llm: this.config.llm,
+        systemCode: this.config.systemCode,
+        repoOwner,
+        repoName,
+      });
+
+      const graph = buildPRGraph();
+
+      console.log(`[PRGraph] Starting PR generation for ${this.config.systemCode}...`);
+
+      const initialState: Partial<PRGraphStateType> = {
+        systemCode: this.config.systemCode,
+        changeType: this.config.changeType,
+        changes: this.config.changes,
+        capturedApiSchema: this.config.capturedApiSchema || null,
+      };
+
+      const finalState = await graph.invoke(initialState);
+
+      console.log(`[PRGraph] Complete. Status: ${finalState.status}`);
+
+      return {
+        status: finalState.status,
+        prUrl: finalState.prUrl || undefined,
+        prNumber: finalState.prNumber || undefined,
+        branchName: finalState.branchName || undefined,
+        errorMessage: finalState.errorMessage || undefined,
+      };
+    } finally {
+      clearNodeContext();
+    }
+  }
+}
