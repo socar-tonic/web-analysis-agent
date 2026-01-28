@@ -27,18 +27,46 @@ export async function executeSearch(
   const { mcpClient, carNum } = ctx;
   const { formElements, analysisSource } = state;
 
+  // Check if input expects 4 digits only (common pattern for parking systems)
+  const inputSelector = formElements.searchInputSelector || '';
+  const expects4Digits = inputSelector.includes('4자리') ||
+                         inputSelector.includes('4digit') ||
+                         inputSelector.includes('four');
+  const searchValue = expects4Digits ? extractLast4Digits(carNum) : carNum;
+
   console.log('  [executeSearch] Executing DOM-based search...');
   console.log(`    - carNum: ${carNum}`);
+  console.log(`    - searchValue: ${searchValue} (expects4Digits: ${expects4Digits})`);
   console.log(`    - inputRef: ${formElements.searchInputRef}`);
   console.log(`    - inputSelector: ${formElements.searchInputSelector}`);
   console.log(`    - buttonRef: ${formElements.searchButtonRef}`);
   console.log(`    - buttonSelector: ${formElements.searchButtonSelector}`);
 
   try {
-    // Step 1: Input vehicle number into search field
+    // Step 1: Setup network capture BEFORE any input (some sites auto-search on input)
+    let searchStartTime = Date.now();
+    try {
+      // Install interceptor (will say "Already installed" if LoginGraph installed it)
+      await mcpClient.callTool({
+        name: 'browser_evaluate',
+        arguments: { function: NETWORK_INTERCEPTOR_JS },
+      });
+
+      // Store the search start timestamp in window for later filtering
+      await mcpClient.callTool({
+        name: 'browser_evaluate',
+        arguments: { function: `() => { window.__searchStartTime = ${searchStartTime}; return ${searchStartTime}; }` },
+      });
+      console.log(`  [executeSearch] Network capture setup, search start time: ${searchStartTime}`);
+    } catch (e) {
+      console.log(`  [executeSearch] Failed to setup network capture: ${(e as Error).message}`);
+    }
+
+    // Step 2: Input vehicle number into search field
+    // NOTE: Some sites auto-search when input is complete (no button click needed)
     const inputResult = await inputVehicleNumber(
       mcpClient,
-      carNum,
+      searchValue,
       formElements.searchInputRef,
       formElements.searchInputSelector
     );
@@ -48,22 +76,7 @@ export async function executeSearch(
       return handleSearchError(inputResult.error!, analysisSource);
     }
 
-    console.log('  [executeSearch] Input complete, installing network interceptor...');
-
-    // Step 2: Install network interceptor BEFORE clicking search button
-    // This captures all XHR/fetch requests triggered by the search action
-    try {
-      await mcpClient.callTool({
-        name: 'browser_evaluate',
-        arguments: { function: NETWORK_INTERCEPTOR_JS },
-      });
-      console.log('  [executeSearch] Network interceptor installed');
-    } catch (e) {
-      console.log(`  [executeSearch] Failed to install network interceptor: ${(e as Error).message}`);
-      // Continue anyway - network capture is optional
-    }
-
-    console.log('  [executeSearch] Clicking search button...');
+    console.log('  [executeSearch] Input complete, clicking search button (if needed)...');
 
     // Step 3: Click search button
     const clickResult = await clickSearchButton(
@@ -78,8 +91,9 @@ export async function executeSearch(
     }
 
     // Step 4: Wait for results to load (and network requests to complete)
-    console.log('  [executeSearch] Waiting for results and network requests...');
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    // Increased to 4 seconds to ensure async API calls complete
+    console.log('  [executeSearch] Waiting for results and network requests (4s)...');
+    await new Promise(resolve => setTimeout(resolve, 4000));
 
     console.log('  [executeSearch] Search executed successfully');
     return {};

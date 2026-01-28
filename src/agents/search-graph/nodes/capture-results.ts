@@ -77,14 +77,89 @@ export async function captureResults(
   // Pre-capture network requests before agent starts
   let capturedRequests: CapturedNetworkRequest[] = [];
   try {
+    // Get the search start timestamp
+    const timestampResult = await mcpClient.callTool({
+      name: 'browser_evaluate',
+      arguments: { function: '() => window.__searchStartTime || 0' },
+    });
+    const timestampText = extractTextFromMcpResult(timestampResult);
+    const searchStartTime = parseInt(timestampText.match(/\d+/)?.[0] || '0', 10);
+    console.log(`  [captureResults] Search start time: ${searchStartTime}`);
+
+    // Get all captured requests
     const networkResult = await mcpClient.callTool({
       name: 'browser_evaluate',
       arguments: { function: GET_CAPTURED_REQUESTS_JS },
     });
-    const requestsJson = extractTextFromMcpResult(networkResult);
-    if (requestsJson) {
-      capturedRequests = JSON.parse(requestsJson);
-      console.log(`  [captureResults] Pre-captured ${capturedRequests.length} network requests`);
+    const rawText = extractTextFromMcpResult(networkResult);
+    console.log(`  [captureResults] Raw MCP result (first 200 chars): ${rawText.slice(0, 200)}`);
+
+    // Extract JSON array from MCP result (may contain markdown headers and be double-encoded)
+    // MCP returns: ### Result\n"[{\"escaped\":\"json\"}]"\n### Ran Playwright...
+    let jsonStr = rawText;
+
+    // First, try to find a quoted JSON string (double-encoded case)
+    const quotedMatch = rawText.match(/"(\[[\s\S]*?\])"/);
+    if (quotedMatch) {
+      // Unescape the JSON string
+      jsonStr = quotedMatch[1].replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+      console.log(`  [captureResults] Extracted quoted JSON: ${jsonStr.slice(0, 100)}...`);
+    } else {
+      // Try direct JSON array match
+      const directMatch = rawText.match(/\[[\s\S]*\]/);
+      if (directMatch) {
+        jsonStr = directMatch[0];
+      }
+    }
+
+    const jsonMatch = jsonStr.match(/\[[\s\S]*\]/);
+    if (jsonMatch) {
+      const rawRequests = JSON.parse(jsonMatch[0]);
+      console.log(`  [captureResults] Total captured requests: ${rawRequests.length}`);
+
+      // Map interceptor fields to CapturedNetworkRequest fields
+      const allRequests = rawRequests.map((r: any) => {
+        let requestBody = undefined;
+        let responseBody = undefined;
+        try {
+          requestBody = r.requestBody || (r.body ? (typeof r.body === 'string' ? JSON.parse(r.body) : r.body) : undefined);
+        } catch { requestBody = r.body || r.requestBody; }
+        try {
+          responseBody = r.responseBody || (r.response ? (typeof r.response === 'string' ? JSON.parse(r.response) : r.response) : undefined);
+        } catch { responseBody = r.response || r.responseBody; }
+        return {
+          url: r.url,
+          method: r.method || 'GET',
+          requestBody,
+          responseStatus: r.responseStatus || r.status || 0,
+          responseBody,
+          timestamp: r.timestamp || Date.now(),
+        };
+      });
+
+      // Filter to only requests after search started
+      if (searchStartTime > 0) {
+        capturedRequests = allRequests.filter((r: CapturedNetworkRequest) => r.timestamp >= searchStartTime);
+        console.log(`  [captureResults] Filtered to ${capturedRequests.length} requests after search start`);
+      } else {
+        capturedRequests = allRequests;
+      }
+
+      console.log(`  [captureResults] Search-related requests (after ${searchStartTime}):`);
+      for (const req of capturedRequests.slice(0, 10)) {
+        console.log(`    - ${req.method} ${req.url} (${req.responseStatus}) @${req.timestamp}`);
+      }
+
+      // Also log all requests if none matched, for debugging
+      if (capturedRequests.length === 0 && allRequests.length > 0) {
+        console.log(`  [captureResults] DEBUG: All ${allRequests.length} requests with timestamps:`);
+        for (const req of allRequests.slice(-5)) {
+          const diff = req.timestamp - searchStartTime;
+          console.log(`    - ${req.method} ${req.url} @${req.timestamp} (diff: ${diff}ms)`);
+        }
+      }
+    } else {
+      console.log(`  [captureResults] No JSON array found in MCP result`);
     }
   } catch (e) {
     console.log(`  [captureResults] Could not pre-capture network requests: ${(e as Error).message}`);
