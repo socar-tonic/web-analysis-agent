@@ -169,9 +169,31 @@ export async function verifyResult(
     let specChanges: SpecChanges | null = null;
 
     try {
-      const jsonMatch = finalResponse.match(/\{[\s\S]*\}/);
+      // Extract JSON from response - handle markdown code blocks and multiple JSON objects
+      let jsonStr = finalResponse;
+
+      // Remove markdown code block if present
+      const codeBlockMatch = finalResponse.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (codeBlockMatch) {
+        jsonStr = codeBlockMatch[1].trim();
+      }
+
+      // Find the first complete JSON object (handle nested braces)
+      const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
+        // Try to parse, if fails try to find a valid JSON by trimming
+        let parsed;
+        try {
+          parsed = JSON.parse(jsonMatch[0]);
+        } catch {
+          // Try to find a simpler JSON pattern (first object only)
+          const simpleMatch = jsonStr.match(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/);
+          if (simpleMatch) {
+            parsed = JSON.parse(simpleMatch[0]);
+          } else {
+            throw new Error('No valid JSON found');
+          }
+        }
         status = parsed.status || 'UNKNOWN_ERROR';
         confidence = parsed.confidence || 0.5;
         errorMessage = parsed.errorMessage || null;
