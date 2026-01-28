@@ -13,7 +13,8 @@
     "agent:login": "tsx src/cli.ts login",
     "agent:login-graph": "tsx src/cli.ts login-graph",
     "agent:search": "tsx src/cli.ts search",
-    "agent:login-search": "tsx src/cli.ts login-search"
+    "agent:login-search": "tsx src/cli.ts login-search",
+    "agent:analyze": "tsx src/cli.ts analyze"
   },
   "type": "module",
   "keywords": [],

@@ -6,6 +6,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { LoginAgent, SearchAgent } from './agents/index.js';
 import { LoginGraph } from './agents/login-graph/index.js';
 import { SearchGraph } from './agents/search-graph/index.js';
+import { AnalysisOrchestrator } from './orchestrator/index.js';
 import { CredentialManager } from './security/index.js';
 import { SpecStore } from './specs/index.js';
 import { createLLMForAgent } from './llm/index.js';
@@ -393,6 +394,45 @@ async function runLoginSearchGraphCommand(input: MockInput): Promise<AgentResult
 }
 
 // ============================================================
+// Analyze Command (Full Orchestrator)
+// ============================================================
+
+async function runAnalyzeCommand(input: MockInput): Promise<AgentResult> {
+  console.log(`\n[Analysis Orchestrator] Starting full analysis for: ${input.systemCode}`);
+
+  const llm = createLLMForAgent('login');
+
+  const orchestrator = new AnalysisOrchestrator({
+    llm,
+    slackWebhookUrl: process.env.SLACK_WEBHOOK_URL || 'mock',
+  });
+
+  const result = await orchestrator.run({
+    systemCode: input.systemCode,
+    url: input.url,
+    username: input.id,
+    password: input.pwd,
+    carNum: input.carNum,
+  });
+
+  console.log('\n=== Analysis Result ===');
+  console.log('Action:', result.action);
+  if (result.prUrl) {
+    console.log('PR URL:', result.prUrl);
+  }
+  if (result.error) {
+    console.log('Error:', result.error);
+  }
+
+  return {
+    agent: 'orchestrator',
+    success: result.action !== 'notified' || !result.error,
+    analysis: JSON.stringify(result, null, 2),
+    data: result,
+  };
+}
+
+// ============================================================
 // Main
 // ============================================================
 
@@ -434,9 +474,12 @@ async function main() {
   } else if (agentArg === 'login-search') {
     // LoginGraph -> SearchGraph flow with shared MCP
     results = await runLoginSearchGraphCommand(input);
+  } else if (agentArg === 'analyze') {
+    // Full orchestrator flow with automatic PR generation
+    results.push(await runAnalyzeCommand(input));
   } else {
     console.error(`\n[ERROR] Unknown command: ${agentArg}`);
-    console.error('   Available commands: login, login-graph, search, login-search');
+    console.error('   Available commands: login, login-graph, search, login-search, analyze');
     process.exit(1);
   }
 
