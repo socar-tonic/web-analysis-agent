@@ -141,10 +141,10 @@ export class AnalysisOrchestrator {
     // GitHub MCP 클라이언트 생성
     const githubTransport = new StdioClientTransport({
       command: 'npx',
-      args: ['@anthropic/github-mcp@latest'],
+      args: ['-y', '@modelcontextprotocol/server-github'],
       env: {
         ...process.env,
-        GITHUB_TOKEN: process.env.GITHUB_TOKEN || '',
+        GITHUB_PERSONAL_ACCESS_TOKEN: process.env.GITHUB_TOKEN || '',
       },
     });
     const githubMcp = new Client({ name: 'orchestrator-github', version: '1.0.0' });
